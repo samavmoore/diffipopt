@@ -248,125 +248,16 @@ class Trapezoidal():
             else:
                 A = np.concatenate((A, row_block), axis=0)
         return A
-    
-    def _get_bounding_box_func(self):
-        """
-        This function turns the bounding box constraints into a list of functions that can be evaluated with the parameters and the variables
-
-        xL <= x <= xU -> xL -x <= 0 and  x - xU <= 0 while filtering out the constraints with infinite bounds or None bounds
-        """
-
-        g_x_bounds = []
-        # Define the start and end indices for path states and path inputs before defining the functions because these are static
-
-        def bound_final_time_lb(x, p, lb):
-            # grab the final time
-            x = x[0]
-            lbs = np.array(lb(p)).squeeze()
-            return _filter_lbs(x, lbs)
-        
-        g_x_bounds.append(Partial(bound_final_time_lb, lb=self.problem.final_time.lb))
-        
-        def bound_initial_state_lb(x, p, lb):
-            # grab the initial state
-            x = x[1:self.n_states+1]
-            lbs = np.array(lb(p)).squeeze()
-            return _filter_lbs(x, lbs)
-        
-        g_x_bounds.append(Partial(bound_initial_state_lb, lb=self.problem.initial_state.lb))
-
-        def bound_initial_input_lb(x, p, lb):
-            # grab the initial input
-            x = x[self.n_states+1:self.n_states+self.n_inputs+1]
-            lbs = np.array(lb(p)).squeeze()
-            return _filter_lbs(x, lbs)
-        
-        g_x_bounds.append(Partial(bound_initial_input_lb, lb=self.problem.input.lb))
-
-        def bound_path_lb(x, p, lb_s, lb_u):
-            # grab the path states and inputs
-            x = x[self.n_states+self.n_inputs+1:-self.n_states-self.n_inputs]
-            state_lbs = np.array(lb_s(p)).squeeze()
-            input_lbs = np.array(lb_u(p)).squeeze()
-            lbs = np.concatenate([state_lbs, input_lbs])
-            lbs = lbs.repeat(self.grid_pts-2)
-            return _filter_lbs(x, lbs)
-        
-        g_x_bounds.append(Partial(bound_path_lb, lb_s=self.problem.path_state.lb, lb_u=self.problem.input.lb))
-
-        def bound_final_state_lb(x, p, lb):
-            # grab the final state
-            x = x[-self.n_states:-self.n_inputs]
-            lbs = np.array(lb(p)).squeeze()
-            return _filter_lbs(x, lbs)
-        
-        g_x_bounds.append(Partial(bound_final_state_lb, lb=self.problem.final_state.lb))
-
-        def bound_final_input_lb(x, p, lb):
-            # grab the final input
-            x = x[-self.n_inputs:]
-            lbs = np.array(lb(p)).squeeze()
-            return _filter_lbs(x, lbs)
-        
-        g_x_bounds.append(Partial(bound_final_input_lb, lb=self.problem.input.lb))
-
-        def bound_final_time_ub(x, p, ub):
-            # grab the final time
-            x = x[0]
-            ubs = np.array(ub(p)).squeeze()
-            return _filter_ubs(x, ubs)
-        
-        g_x_bounds.append(Partial(bound_final_time_ub, ub=self.problem.final_time.ub))
-
-        def bound_initial_state_ub(x, p, ub):
-            # grab the initial state
-            x = x[1:self.n_states+1]
-            ubs = np.array(ub(p)).squeeze()
-            return _filter_ubs(x, ubs)
-        
-        g_x_bounds.append(Partial(bound_initial_state_ub, ub=self.problem.initial_state.ub))
-
-        def bound_initial_input_ub(x, p, ub):
-            # grab the initial input
-            x = x[self.n_states+1:self.n_states+self.n_inputs+1]
-            ubs = np.array(ub(p)).squeeze()
-            return _filter_ubs(x, ubs)
-
-        g_x_bounds.append(Partial(bound_initial_input_ub, ub=self.problem.input.ub))
-
-        def bound_path_ub(x, p, ub_s, ub_u):
-            # grab the path states and inputs
-            x = x[self.n_states+self.n_inputs+1:-self.n_states-self.n_inputs]
-            state_ubs = np.array(ub_s(p)).squeeze()
-            input_ubs = np.array(ub_u(p)).squeeze()
-            ubs = np.concatenate([state_ubs, input_ubs])
-            ubs = ubs.repeat(self.grid_pts-2)
-            return _filter_ubs(x, ubs)
-        
-        g_x_bounds.append(Partial(bound_path_ub, ub_s=self.problem.path_state.ub, ub_u=self.problem.input.ub))
-
-        def bound_final_state_ub(x, p, ub):
-            # grab the final state
-            x = x[-self.n_states:-self.n_inputs]
-            ubs = np.array(ub(p)).squeeze()
-            return _filter_ubs(x, ubs)
-        
-        g_x_bounds.append(Partial(bound_final_state_ub, ub=self.problem.final_state.ub))
-
-        def bound_final_input_ub(x, p, ub):
-            # grab the final input
-            x = x[-self.n_inputs:]
-            ubs = np.array(ub(p)).squeeze()
-            return _filter_ubs(x, ubs)
-        
-        g_x_bounds.append(Partial(bound_final_input_ub, ub=self.problem.input.ub))
-    
-        return g_x_bounds
 
     def extract_values(self, x, start, end):
         return x[start:end]
 
     def _generate_bound_box_funcs(self):
+        """
+        This function turns the bounding box constraints into a list of functions that can be evaluated with the parameters and the variables
+
+        xL <= x <= xU -> xL -x <= 0 and  x - xU <= 0 while filtering out the constraints with infinite bounds or None bounds
+        """
         constraint_definitions = [
         # (name, starting index, ending index, bound_func1, bound_func2, filter_func)
         ("final_time_lb", 0, 1, self.problem.final_time.lb, None, _filter_lb),
