@@ -7,38 +7,50 @@ from jax import core
 from jax.tree_util import Partial
 from functools import partial
 import inspect
+from typing import Callable, Any, Optional, NamedTuple, Tuple, List, Dict
 jax.config.update("jax_enable_x64", True)
 
+# naming the fields of the problem and control problem tuples
 fields = ['cost', 'constraints', 'bounds' 'options']
 Problem = namedtuple("Problem", fields, defaults=(None for i in range(len(fields))))
+"""
+Problem namedtuple representing a conventional optimization problem.
 
+Attributes:
+    cost (Callable[[NamedTuple, NamedTuple], Union[jax.numpy.ndarray, float]]):
+        Objective function with signature f(x, p) where:
+        x: Decision variables.
+        p: Parameters (user-defined namedtuples).
+        
+    constraints (NamedTuple):
+        Constraint functions with the signature g(x, p) <= 0 passed in as an instace of the namedtuple Constraint with the field g.
+        
+    bounds (NamedTuple):
+        The bounds on the decision variables, an instance of BoundingBox namedtuples.
+        
+    options (Optional[Dict[str, Any]):
+        Additional optional configurations or settings for the optimization problem.
+"""
 control_fields = ['integration_type', 'final_cost', 'path_cost', 'initial_state', 'path_state', 
         'final_state', 'input', 'initial_g', 'path_g', 'final_g', 
         'final_time', 'state_tup', 'input_tup', 'dynamics', 'grid_pts', 'options']
 
 ControlProblem = namedtuple("ControlProblem", control_fields, defaults=(None for i in range(len(control_fields))))
-"""
-Point represents a 2D point in a plane.
-
-Attributes:
-- x (float): The x coordinate.
-- y (float): The y coordinate.
-"""
-
 
 Constraint  = namedtuple('Constraint',['g'])
 """
-Constraint is a wrapper for a constraint function of the form g(x, p) <= 0
-
 Attributes:
-- g (function): The constraint function.
+    g (Callable[[NamedTuple, NamedTuple], Union[jax.numpy.ndarray, NamedTuple, List, float]]]):
+        Constraint function with signature g(x, p) <= 0 where:
+        x: Decision variables.
+        p: Parameters (user-defined namedtuples).
 
 Example:
     -10 <= x[0] + x[1] <= 1
     
    >>> def g(x, p):
    >>>      return x[0] + x[1] - 1, -x[0] - x[1] - 10
-    """
+"""
 BoundingBox = namedtuple('BoundingBox', ['lb', 'ub'])
 class Trapezoidal():
     def __init__(self, Problem, Parameters):
