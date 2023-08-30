@@ -85,13 +85,12 @@ class Trapezoidal():
 
         self.constraints_x_p, self.g_bounds = self._stack_constraints()
         self.g_lb, self.g_ub = np.concatenate([b.lb for b in self.g_bounds]), np.concatenate([b.ub for b in self.g_bounds])
-        self.constraints_x = [Partial(f, p=self.params) for f in self.constraints_x_p]
-        self.constraints_x_p_jit = [jax.jit(f) for f in self.constraints_x_p]
-        self.constraints_x_jit = [jax.jit(f) for f in self.constraints_x]
+        self.constraints_x = [Partial(g, p=self.params) for g in self.constraints_x_p]
+        self.constraints_x_p_jit = [jax.jit(g) for g in self.constraints_x_p]
+        self.constraints_x_jit = [jax.jit(g) for g in self.constraints_x]
 
-        self.constraint_jac_x = [jax.jit(jax.jacobian(f)) for f in self.constraints_x]
-        self.constraint_jac_x_p = [jax.jit(jax.jacobian(f)) for f in self.constraints_x_p]
-
+        self.constraint_jac_x = [jax.jit(jax.jacobian(g)) for g in self.constraints_x]
+        self.constraint_jac_x_p = [jax.jit(jax.jacobian(g)) for g in self.constraints_x_p]
 
 
         self.objectives_x_p = self._setup_objective()
