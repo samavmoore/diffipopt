@@ -100,17 +100,19 @@ class Trapezoidal():
         self.obj_grad_x = [jax.jit(jax.grad(f)) for f in self.objectives_x]
         self.obj_grad_x_p = [jax.jit(jax.grad(f)) for f in self.objectives_x_p]
 
+        self.bound_box_x_p = self._generate_bound_box_funcs()
+        self.bound_box_x = [Partial(g, p=self.params) for g in self.bound_box_x_p]
 
 
-
-        test_x = np.arange(self.n_vars)
-        
+        test_x = np.arange(self.n_vars, dtype=np.float64)
+        testing_bounding = [g(test_x) for g in self.bound_box_x]
+        print(testing_bounding)
 
         #test1 = [f(x=test_x, p=self.params) for f in self.stacked_constraints_x_p]
         
         #test2 = [f(x=test_x) for f in self.stack_constraints_x]
 
-        test3 = [f(x=test_x, p=self.params) for f in self.objectives_x_p]
+        #test3 = [f(x=test_x, p=self.params) for f in self.objectives_x_p]
 
     def objective(self, x):
         return np.sum([f(x) for f in self.objectives_x])
@@ -271,31 +273,32 @@ class Trapezoidal():
         """
         constraint_definitions = [
         # (name, starting index, ending index, bound_func1, bound_func2, filter_func)
-        ("final_time_lb", 0, 1, self.problem.final_time.lb, None, _filter_lb),
-        ("initial_state_lb", 1 , self.n_states+1, self.problem.initial_state.lb, None, _filter_lb),
-        ("initial_input_lb", self.n_states+1, self.n_states+self.n_inputs+1, self.problem.input.lb, None, _filter_lb),
-        ("path_lb", self.n_states+self.n_inputs+1, self.n_vars-self.n_states-self.n_inputs, self.problem.path_state.lb, self.problem.input.lb, _filter_lb),
-        ("final_state_lb", self.n_vars-self.n_states-self.n_inputs, self.n_vars-self.n_inputs, self.problem.final_state.lb, None, _filter_lb),
-        ("final_input_lb", self.n_vars-self.n_inputs, self.n_vars, self.problem.input.lb, None, _filter_lb),
-        ("final_time_ub", 0, 1, self.problem.final_time.ub, None, _filter_ub),
-        ("initial_state_ub", 1 , self.n_states+1, self.problem.initial_state.ub, None, _filter_ub),
-        ("initial_input_ub", self.n_states+1, self.n_states+self.n_inputs+1, self.problem.input.ub, None, _filter_ub),
-        ("path_ub", self.n_states+self.n_inputs+1, self.n_vars-self.n_states-self.n_inputs, self.problem.path_state.ub, self.problem.input.ub, _filter_ub),
-        ("final_state_ub", self.n_vars-self.n_states-self.n_inputs, self.n_vars-self.n_inputs, self.problem.final_state.ub, None, _filter_ub),
-        ("final_input_ub", self.n_vars-self.n_inputs, self.n_vars, self.problem.input.ub, None, _filter_ub)
+        ("final_time_lb", 0, 1, self.problem.final_time.lb, None, _filter_lbs),
+        ("initial_state_lb", 1 , self.n_states+1, self.problem.initial_state.lb, None, _filter_lbs),
+        ("initial_input_lb", self.n_states+1, self.n_states+self.n_inputs+1, self.problem.input.lb, None, _filter_lbs),
+        ("path_lb", self.n_states+self.n_inputs+1, self.n_vars-self.n_states-self.n_inputs, self.problem.path_state.lb, self.problem.input.lb, _filter_lbs),
+        ("final_state_lb", self.n_vars-self.n_states-self.n_inputs, self.n_vars-self.n_inputs, self.problem.final_state.lb, None, _filter_lbs),
+        ("final_input_lb", self.n_vars-self.n_inputs, self.n_vars, self.problem.input.lb, None, _filter_lbs),
+        ("final_time_ub", 0, 1, self.problem.final_time.ub, None, _filter_ubs),
+        ("initial_state_ub", 1 , self.n_states+1, self.problem.initial_state.ub, None, _filter_ubs),
+        ("initial_input_ub", self.n_states+1, self.n_states+self.n_inputs+1, self.problem.input.ub, None, _filter_ubs),
+        ("path_ub", self.n_states+self.n_inputs+1, self.n_vars-self.n_states-self.n_inputs, self.problem.path_state.ub, self.problem.input.ub, _filter_ubs),
+        ("final_state_ub", self.n_vars-self.n_states-self.n_inputs, self.n_vars-self.n_inputs, self.problem.final_state.ub, None, _filter_ubs),
+        ("final_input_ub", self.n_vars-self.n_inputs, self.n_vars, self.problem.input.ub, None, _filter_ubs)
         ]
 
         bounding_box_funcs = []
 
         def path_bounding_box_constraints(x, p, start, end, bound_func1, bound_func2, filter_func, bounds_size):
             x = self.extract_values(x, start, end)
-            return apply_path_bounding_box(x, p, bound_func1, bound_func2, filter_func)
+            return apply_path_bounding_box(x, p, bound_func1, bound_func2, filter_func, bounds_size)
         
         def apply_path_bounding_box(x, p, bounds_func1, bounds_func2, filter_func, bounds_size):
             state_bounds = np.array(bounds_func1(p)).squeeze()
             input_bounds = np.array(bounds_func2(p)).squeeze()
+            state_bounds, input_bounds = np.atleast_1d(state_bounds), np.atleast_1d(input_bounds)
             bound_vals = np.concatenate([state_bounds, input_bounds])
-            bound_vals = bound_vals.repeat(bounds_size-2)
+            bound_vals = np.tile(bound_vals, bounds_size-2)
             return filter_func(x, bound_vals)
         
         def apply_bounding_box(x, p, bound_func, filter_func):
@@ -410,17 +413,19 @@ def _filter_ub(g_value, ub_val):
         
         return jax.lax.cond(np.isinf(ub_val), ub_infinite, ub_finite, None)
 
-_vmapped_filter_lb = jax.vmap(_filter_lb, in_axes=(0, None))
+_vmapped_filter_lb = jax.vmap(_filter_lb, in_axes=(0, 0))
 
-_vmapped_filter_ub = jax.vmap(_filter_ub, in_axes=(0, None))
+_vmapped_filter_ub = jax.vmap(_filter_ub, in_axes=(0, 0))
 
 def _filter_lbs(g_values, lb):
+    lb, g_values = np.atleast_1d(lb), np.atleast_1d(g_values)
     results = _vmapped_filter_lb(g_values, lb)
     results = results.flatten()
     mask = ~np.isnan(results)
     return np.where(mask, results, -1.)  # Substitute NaNs with -1 or another placeholder value
 
 def _filter_ubs(g_values, ub):
+    ub, g_values = np.atleast_1d(ub), np.atleast_1d(g_values)
     results = _vmapped_filter_ub(g_values, ub)
     results = results.flatten()
     mask = ~np.isnan(results)
