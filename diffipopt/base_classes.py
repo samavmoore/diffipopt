@@ -33,7 +33,7 @@ Attributes:
 """
 control_fields = ['integration_type', 'final_cost', 'path_cost', 'initial_state', 'path_state', 
         'final_state', 'input', 'initial_g', 'path_g', 'final_g', 
-        'final_time', 'state_tup', 'input_tup', 'dynamics', 'grid_pts', 'options']
+        'final_time', 'state_tup', 'input_tup', 'param_tup', 'dynamics', 'grid_pts', 'options']
 
 ControlProblem = namedtuple("ControlProblem", control_fields, defaults=(None for i in range(len(control_fields))))
 
@@ -69,7 +69,7 @@ class Trapezoidal():
 
         '''
         self.problem = Problem
-        self.params = Parameters
+        self.params = Problem.param_tup(*Parameters)
         self.n_states = len(Problem.state_tup._fields)
         self.n_inputs = len(Problem.input_tup._fields)
         self.states = Problem.state_tup
@@ -81,6 +81,7 @@ class Trapezoidal():
         self.xL, self.xU = self._get_bounds()
         self.A = self._get_A()
         self.B = self._get_B()
+
         self._setup_functions()
 
         self.constraints_x_p, self.g_bounds = self._stack_constraints()
@@ -184,7 +185,6 @@ class Trapezoidal():
                 # evaluating the final constraint function and subtracting the upper bound and lower bound so that the constraint is of the form g(x, p) <= 0
                 return g_f(x, p)
         
-
         # add the dynamics constraints to the stack, wrap them in a partial to evaluate the function with the correct number of states, inputs, and grid points
         stacked_constraints.append(Partial(transcribed_dynamics, f=self.dynamics, n_states=self.n_states, n_inputs=self.n_inputs, grid_pts=self.grid_pts, A=self.A, B=self.B))
         dynamics_bounds = np.zeros((self.n_states * (self.grid_pts-1), ))
@@ -237,29 +237,36 @@ class Trapezoidal():
         B = -1/2*delta_tau[[I, I, 0, 0, ...][0, 0, I, I, 0, 0, ...]...[0, 0, ..., I, I]]
         where delta_tau is the non-dimensional time step and I is the identity matrix of size n_states
         '''
-        for i in range(self.grid_pts-1):
-            row_block = np.zeros((self.n_states, self.n_states*self.grid_pts))
-            row_block = row_block.at[: , i*(2 * self.n_states): i*(2 * self.n_states) + self.n_states].set(np.eye(self.n_states))
-            row_block = row_block.at[: , i*(2 * self.n_states) + self.n_states: (i + 1)*(2 * self.n_states)].set(np.eye(self.n_states))
-            if i == 0:
-                B = row_block
-            else:
-                B = np.concatenate((B, row_block), axis=0)
+        I = np.eye(self.n_states)
+        zero_block = np.zeros((self.n_states, self.n_states))
+
+        # Construct row block using hstack (horizontal stacking)
+        row_block = np.hstack([I, I])
+        
+        # Construct the full matrix B using vstack (vertical stacking)
+        B = np.zeros((self.n_states * (self.grid_pts - 1), self.n_states * self.grid_pts))
+
+        for i in range(self.grid_pts - 1):
+            B = B.at[i*self.n_states:(i+1)*self.n_states, i*self.n_states*2:(i+1)*self.n_states*2].set(row_block)
+
         return -B * self.d_tau * 0.5
-    
+
     def _get_A(self):
         '''
         This function returns the matrix A which is used to transcribe the dynamics constraints. A is defined as follows (from Betts 4.6.4):
-        A = [[0, -I, 0, I, ...][0, 0, 0, -I, 0, I, ...]...[0, 0, ..., I, 0]]
+        A = [[0_col, -I, 0, I, ...][0, 0, 0, -I, 0, I, ...]...[0, 0, ..., I, 0]]
         '''
-        for i in range(self.grid_pts-1):
-            row_block = np.zeros((self.n_states, self.n_vars))
-            row_block = row_block.at[:, i*(self.n_states + self.n_inputs) + 1: i*(self.n_states + self.n_inputs) + self.n_states + 1].set(-np.eye(self.n_states))
-            row_block = row_block.at[:, (i + 1)*(self.n_states + self.n_inputs) + 1: (i + 1)*(self.n_states + self.n_inputs) + self.n_states + 1].set(np.eye(self.n_states))
-            if i == 0:
-                A = row_block
-            else:
-                A = np.concatenate((A, row_block), axis=0)
+        I = np.eye(self.n_states)
+        zero_column = np.zeros((self.n_states, 1))
+        zero_block_1 = np.zeros((self.n_states, self.n_inputs))
+        zero_block_2  = np.zeros((self.n_states, self.n_states+self.n_inputs))
+
+        # Construct row block using hstack (horizontal stacking)
+        row_block = np.hstack([zero_column, -I, zero_block_1, I, zero_block_1] + [zero_block_2] * (self.grid_pts - 2))
+        
+        # Construct the full matrix A using vstack (vertical stacking)
+        A = np.vstack([np.roll(row_block, shift=i*(self.n_states + self.n_inputs), axis=1) for i in range(self.grid_pts-1)])
+        
         return A
 
     def extract_values(self, x, start, end):

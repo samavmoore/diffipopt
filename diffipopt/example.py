@@ -64,6 +64,7 @@ if __name__ == '__main__':
 
     # add path constraints
     problem = problem._replace(path_g=Constraint(g=lambda s, u, p: [s.x_dot**2 + s.theta_dot**2 - 4.0, s.theta - np.pi, u.f_x**2 - p.f_max**2]))
+    problem = problem._replace(param_tup=params)
 
     out = solve(problem, cartpole_params)
     #print(type(out))
