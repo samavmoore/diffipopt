@@ -9,6 +9,7 @@ import inspect
 jax.config.update("jax_enable_x64", True)
 from solve import solve
 from base_classes import Problem, ControlProblem, Constraint, BoundingBox, Trapezoidal, HermiteSimpson, Standard
+import matplotlib.pyplot as plt
 
 
 
@@ -20,28 +21,28 @@ if __name__ == '__main__':
 
     # Instantiate structs for parameters and problem
     cartpole_params = params(m_c=2.0, m_p=.5, l=0.5, dist=0.8, f_max=100., tf=2.0)
-    problem = ControlProblem(integration_type='trapezoidal', state_tup=states, input_tup=inputs)
 
     # Define dynamics and cost functions
-    #@jax.jit
+    @jax.jit
     def dynamics(s, u, p):
-        sin = np.sin(s.theta)
-        cos = np.cos(s.theta)
-        g=9.81
+        sine_theta = np.sin(s.theta)
+        cosine_theta = np.cos(s.theta)
+        g = 9.81
 
         x_dot = s.x_dot
-        x_ddot = 1/(p.m_c + p.m_p*(sin)**2)*(u.f_x + p.m_p*sin*(p.l*s.theta_dot**2 + g*cos))
+        denominator1 = p.m_c + p.m_p * sine_theta**2
+        x_ddot = (u.f_x + p.m_p * sine_theta * (p.l * s.theta_dot**2 + g * cosine_theta)) / denominator1
+        
         theta_dot = s.theta_dot
-        theta_ddot = 1/(p.l*(p.m_c + p.m_p*(sin)**2))*(-u.f_x*cos - p.m_p*p.l*s.theta_dot**2*cos*sin - (p.m_c + p.m_p)*g*sin)
+        denominator2 = p.l * (p.m_c + p.m_p * sine_theta**2)
+        theta_ddot = (-u.f_x * cosine_theta - p.m_p * p.l * s.theta_dot**2 * cosine_theta * sine_theta - (p.m_c + p.m_p) * g * sine_theta) / denominator2
 
         return states(*np.array([x_dot, x_ddot, theta_dot, theta_ddot]))
 
-    path_cost = lambda s, u, p: u.f_x**2
-    problem = problem._replace(dynamics=dynamics, path_cost=path_cost)
 
+    path_cost = lambda s, u, p: .0005*u.f_x**2
     # Define constraints on the initial and final states
     ic_zeros = np.zeros((4, 1))
-    ic_zeros = ic_zeros.at[2,0].set(None)
     ic = states(*ic_zeros)
     ic_bounds = BoundingBox(lb=lambda p: ic, ub=lambda p: ic)
 
@@ -60,13 +61,61 @@ if __name__ == '__main__':
     # constrain the final time
     tf = lambda p: p.tf
     tf_bound = BoundingBox(lb=tf, ub=tf)
-    problem = problem._replace(initial_state=ic_bounds, final_state=fc_bounds, path_state=path_bounds, final_time=tf_bound, input=input_bounds, grid_pts=100)
 
-    # add path constraints
-    problem = problem._replace(path_g=Constraint(g=lambda s, u, p: [s.x_dot**2 + s.theta_dot**2 - 4.0, s.theta - np.pi, u.f_x**2 - p.f_max**2]))
-    problem = problem._replace(param_tup=params)
 
-    out = solve(problem, cartpole_params)
+    grid_pts = 25
+
+    problem = ControlProblem(
+        integration_type='trapezoidal', 
+        state_tup=states, 
+        input_tup=inputs,
+        dynamics=dynamics, 
+        path_cost=path_cost, 
+        initial_state=ic_bounds, 
+        final_state=fc_bounds,
+        path_state=path_bounds, 
+        final_time=tf_bound, 
+        input=input_bounds, 
+        grid_pts=grid_pts,
+        param_tup=params
+    )
+
+    outs = solve(problem, cartpole_params)
+
+    tf = outs[0]
+    n_states = 4
+    n_inputs = 1
+    states_inputs = outs[1:].reshape((grid_pts, n_states + n_inputs))
+
+    # plot the results
+    t = np.linspace(0, tf, grid_pts)
+    plt.figure()
+    plt.subplot(2, 2, 1)
+    plt.plot(t, states_inputs[:, 0])
+    plt.xlabel('Time (s)')
+    plt.ylabel('Cart Position (m)')
+    plt.grid()
+
+    plt.subplot(2, 2, 2)
+    plt.plot(t, states_inputs[:, 1])
+    plt.xlabel('Time (s)')
+    plt.ylabel('Cart Velocity (m/s)')
+    plt.grid()
+
+    plt.subplot(2, 2, 3)
+    plt.plot(t, states_inputs[:, 2])
+    plt.xlabel('Time (s)')
+    plt.ylabel('Pole Angle (rad)')
+    plt.grid()
+
+    plt.subplot(2, 2, 4)
+    plt.plot(t, states_inputs[:, 3])
+    plt.xlabel('Time (s)')
+    plt.ylabel('Pole Angular Velocity (rad/s)')
+    plt.grid()
+
+    plt.show()
+
     #print(type(out))
     #print(out.params)
 

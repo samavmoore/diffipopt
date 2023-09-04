@@ -6,6 +6,7 @@ import cyipopt
 from jax import core
 from jax.tree_util import Partial
 import inspect
+import time
 jax.config.update("jax_enable_x64", True)
 from base_classes import Problem, ControlProblem, Constraint, BoundingBox, Trapezoidal, HermiteSimpson, Standard
 
@@ -13,6 +14,7 @@ def solve(problem_instance, parameters_instance):
     '''Solve an optimization problem instance'''
 
     # initialize the problem instance
+    print("Initializing problem")
     problem_instance = initialize_problem(problem_instance)
 
     if hasattr(problem_instance, 'integration_type'):
@@ -26,7 +28,18 @@ def solve(problem_instance, parameters_instance):
     elif isinstance(problem_instance, Problem):
         problem_cls = Standard(problem_instance, parameters_instance)
 
-    return problem_cls
+    xL, xU = problem_cls.xL, problem_cls.xU
+    gL, gU = problem_cls.gL, problem_cls.gU
+    x0 = initial_guess_traj_opt(problem_instance, parameters_instance)
+    nlp = cyipopt.Problem(n=len(x0), m=len(gL), problem_obj=problem_cls, lb=xL, ub=xU, cl=gL, cu=gU)
+    nlp.add_option('tol', 1e-4)
+    nlp.add_option('max_iter', int(1e5))
+    nlp.add_option('nlp_scaling_method', 'gradient-based')
+
+    print("Solving problem")
+    x, info = nlp.solve(x0)
+
+    return x.astype(np.float64)
 
 def initial_guess_traj_opt(problem_instance, parameters_instance):
     '''Generate an initial guess for the optimization problem instance'''
@@ -43,24 +56,21 @@ def initial_guess_traj_opt(problem_instance, parameters_instance):
             n_vars = (n_states + n_inputs) * (2 * n_grid_pts - 1) + 1
 
         # Interpolate between the initial and final states with np.interp
-        state_vars = np.zeros((n_grid_pts, n_states))
         if problem_instance.initial_state is not None:
-            initial_state = np.nan_to_num(np.asarray(problem_instance.initial_state.lb(parameters_instance)), nan=0)
-            final_state = np.nan_to_num(np.asarray(problem_instance.final_state.lb(parameters_instance)), nan=0)
-            for i in range(n_states):
-                temp_state_vars = np.interp(np.linspace(0, 1, n_grid_pts), np.asarray([0, 1]), np.asarray([initial_state[i].squeeze(), final_state[i].squeeze()]))
-                state_vars = state_vars.at[:, i].set(temp_state_vars)
+            initial_state = np.nan_to_num(np.asarray(problem_instance.initial_state.lb(parameters_instance)), nan=0).squeeze()
+            final_state = np.nan_to_num(np.asarray(problem_instance.final_state.lb(parameters_instance)), nan=0).squeeze()
 
+            def interp(s0, sf, tau):
+                return s0 + (sf - s0) * tau
+            
+            state_vars = jax.vmap(Partial(interp, initial_state, final_state))(np.linspace(0, 1, n_grid_pts))
 
         # Guess a constant input
-        input_vars = np.zeros((n_grid_pts, n_inputs))
         if problem_instance.input is not None:
             lb = np.asarray(problem_instance.input.lb(parameters_instance))
             ub = np.asarray(problem_instance.input.ub(parameters_instance))
             average_input = (lb + ub) / 2.0
-            for i in range(n_inputs):
-                temp_input_vars = np.full(n_grid_pts, average_input[i])
-                input_vars = input_vars.at[:, i].set(temp_input_vars)
+            input_vars = np.tile(average_input, (n_grid_pts, 1))
 
         # Initialize the final time tf
         tf_init = np.asarray(problem_instance.final_time.lb(parameters_instance))
@@ -107,7 +117,7 @@ def check_control_problem(problem_instance):
                         raise ValueError(f"{field}.{subfield} should accept exactly 1 argument (parameter namedtuple)")
                     
                     if not isinstance(subattr, Partial):
-                        bounding_box[subfield] = Partial(subattr)
+                        bounding_box[subfield] = subattr #Partial(subattr)
                     else:
                         bounding_box[subfield] = subattr
                 else:
@@ -132,7 +142,7 @@ def check_control_problem(problem_instance):
                             raise ValueError(f"{field}.{subfield} should accept exactly 3 arguments (states namedtuple, inputs namedtuple, parameters namedtuple)")
                         
                     if not isinstance(subattr, Partial):
-                        constraints[subfield] = Partial(subattr)
+                        constraints[subfield] = subattr #Partial(subattr)
                     else:
                         constraints[subfield] = subattr
 
@@ -143,7 +153,7 @@ def check_control_problem(problem_instance):
             continue
 
         # check if state_tup and input_tup are namedtuples
-        elif field in ['state_tup', 'input_tup']:
+        elif field in ['state_tup', 'input_tup', 'param_tup']:
             if not issubclass(attr, tuple) or not hasattr(attr, '_fields'):
                 raise ValueError(f"{field} should be of type namedtuple")
             wrapped_fields[field] = attr
@@ -170,7 +180,7 @@ def check_control_problem(problem_instance):
 
         # Wrap callable fields with Partial
         if callable(attr) and not isinstance(attr, Partial):
-            wrapped_fields[field] = Partial(attr)
+            wrapped_fields[field] = attr #Partial(attr)
         else:
             wrapped_fields[field] = attr
 
