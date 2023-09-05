@@ -8,12 +8,14 @@ from jax.tree_util import Partial
 import inspect
 jax.config.update("jax_enable_x64", True)
 from solve import solve
-from base_classes import Problem, ControlProblem, Constraint, BoundingBox, Trapezoidal, HermiteSimpson, Standard
+from api import Problem, ControlProblem, Constraint, BoundingBox
 import matplotlib.pyplot as plt
 
 
-
 if __name__ == '__main__':
+    #plt.rc('text', usetex=True)
+    #plt.rc('font', family='serif')
+
     # define structs for states, inputs, and parameters
     states = namedtuple('States', ['x', 'x_dot', 'theta', 'theta_dot'])
     inputs = namedtuple('Inputs', ['f_x'])
@@ -40,10 +42,9 @@ if __name__ == '__main__':
         return states(*np.array([x_dot, x_ddot, theta_dot, theta_ddot]))
 
 
-    path_cost = lambda s, u, p: .0005*u.f_x**2
+    path_cost = lambda s, u, p: .1*u.f_x**2
     # Define constraints on the initial and final states
-    ic_zeros = np.zeros((4, 1))
-    ic = states(*ic_zeros)
+    ic = states(*np.zeros((4, 1)))
     ic_bounds = BoundingBox(lb=lambda p: ic, ub=lambda p: ic)
 
     fc = lambda p: states(x=p.dist, x_dot=0.0, theta=np.pi, theta_dot=0.0)
@@ -62,13 +63,13 @@ if __name__ == '__main__':
     tf = lambda p: p.tf
     tf_bound = BoundingBox(lb=tf, ub=tf)
 
-
     grid_pts = 25
 
     problem = ControlProblem(
         integration_type='trapezoidal', 
         state_tup=states, 
         input_tup=inputs,
+        param_tup=params,
         dynamics=dynamics, 
         path_cost=path_cost, 
         initial_state=ic_bounds, 
@@ -76,40 +77,33 @@ if __name__ == '__main__':
         path_state=path_bounds, 
         final_time=tf_bound, 
         input=input_bounds, 
-        grid_pts=grid_pts,
-        param_tup=params
+        grid_pts=grid_pts
     )
 
-    outs = solve(problem, cartpole_params)
+    tf, states, inputs = solve(problem, cartpole_params)
 
-    tf = outs[0]
-    n_states = 4
-    n_inputs = 1
-    states_inputs = outs[1:].reshape((grid_pts, n_states + n_inputs))
-
-    # plot the results
     t = np.linspace(0, tf, grid_pts)
     plt.figure()
     plt.subplot(2, 2, 1)
-    plt.plot(t, states_inputs[:, 0])
+    plt.plot(t, states.x)
     plt.xlabel('Time (s)')
     plt.ylabel('Cart Position (m)')
     plt.grid()
 
     plt.subplot(2, 2, 2)
-    plt.plot(t, states_inputs[:, 1])
+    plt.plot(t, states.x_dot)
     plt.xlabel('Time (s)')
     plt.ylabel('Cart Velocity (m/s)')
     plt.grid()
 
     plt.subplot(2, 2, 3)
-    plt.plot(t, states_inputs[:, 2])
+    plt.plot(t, states.theta)
     plt.xlabel('Time (s)')
     plt.ylabel('Pole Angle (rad)')
     plt.grid()
 
     plt.subplot(2, 2, 4)
-    plt.plot(t, states_inputs[:, 3])
+    plt.plot(t, states.theta_dot)
     plt.xlabel('Time (s)')
     plt.ylabel('Pole Angular Velocity (rad/s)')
     plt.grid()
@@ -118,6 +112,5 @@ if __name__ == '__main__':
 
     #print(type(out))
     #print(out.params)
-
 
 

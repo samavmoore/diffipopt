@@ -8,7 +8,10 @@ from jax.tree_util import Partial
 import inspect
 import time
 jax.config.update("jax_enable_x64", True)
-from base_classes import Problem, ControlProblem, Constraint, BoundingBox, Trapezoidal, HermiteSimpson, Standard
+from api import Problem, ControlProblem, Constraint, BoundingBox
+from hermite_simpson import HermiteSimpson
+from standard import Standard
+from trapezoidal import Trapezoidal
 
 def solve(problem_instance, parameters_instance):
     '''Solve an optimization problem instance'''
@@ -38,8 +41,14 @@ def solve(problem_instance, parameters_instance):
 
     print("Solving problem")
     x, info = nlp.solve(x0)
+    tf = x[0]
+    states_inputs = x[1:].reshape((problem_cls.grid_pts, problem_cls.n_states + problem_cls.n_inputs))
+    states = states_inputs[:, :problem_cls.n_states]
+    inputs = states_inputs[:, problem_cls.n_states:]
+    states = problem_instance.state_tup(*states.T)
+    inputs = problem_instance.input_tup(*inputs.T)
 
-    return x.astype(np.float64)
+    return tf, states, inputs
 
 def initial_guess_traj_opt(problem_instance, parameters_instance):
     '''Generate an initial guess for the optimization problem instance'''
