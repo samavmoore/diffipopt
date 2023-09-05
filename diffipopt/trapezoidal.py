@@ -5,7 +5,7 @@ from jax.tree_util import Partial
 import scipy.sparse as sparse
 from collections import namedtuple
 from api import BoundingBox
-from common import _filter_lbs, _filter_ubs, _get_B, _get_A, bound_box_func
+from common import _filter_lbs, _filter_ubs, _get_B, _get_A, bound_box_func, _summed_hessians_x_lambda, _summed_hessians_x
 jax.config.update("jax_enable_x64", True)
 
 
@@ -293,64 +293,6 @@ class Trapezoidal():
             xU = xU.at[start:end].set(u_ub)
 
         return xL, xU
-
-def _summed_hessians_x_lambda(fns):
-    """
-    Computes the Hessian matrix of a function, `g(x, lambdas)`, with respect to `x`, 
-    where `g` is a linear combination of the functions in `fns` weighted by `lambdas` the lagrange multipliers.
-
-    `g(x, lambdas)` is defined as the dot product of the evaluation of each function 
-    in `fns` at `x` and the `lambdas` vector.
-
-    Args:
-        fns (list[callable]): A list of functions to be combined. Each function should
-            accept a single argument and return a scalar or array value.
-
-    Returns:
-        callable: A JIT-compiled function that computes the Hessian of `g` with respect 
-        to `x`. The returned function accepts two arguments: `x` and `lambdas`.
-
-    Example:
-        >>> fns = [lambda x: x**2, lambda x: x**3]
-        >>> hessian_func = _summed_hessians_x_lambda(fns)
-        >>> hessian_at_point = hessian_func(2.0, [1.0, 2.0])
-        
-    Note:
-        This function uses JAX for differentiation and JIT compilation and takes advantage of the fact that the Hessian of a sum is the sum of the Hessians.
-
-    """
-    def g(x, lambdas):
-        fnx = np.array([f(x) for f in fns]).squeeze(0)
-        return np.dot(fnx, lambdas)
-    return jax.jit(jax.hessian(g, argnums=0))
-
-
-def _summed_hessians_x(fns):
-    """
-    Computes the Hessian matrix of a function, `g(x)`, with respect to `x`, 
-    where `g` is the sum of the evaluations of each function in `fns` at `x`.
-
-    Args:
-        fns (list[callable]): A list of functions to be summed. Each function should
-            accept a single argument and return a scalar or array value.
-
-    Returns:
-        callable: A JIT-compiled function that computes the Hessian of `g` with respect 
-        to `x`. The returned function accepts a single argument, `x`.
-
-    Example:
-        >>> fns = [lambda x: x**2, lambda x: x**3]
-        >>> hessian_func = _summed_hessians_x(fns)
-        >>> hessian_at_point = hessian_func(2.0)
-        
-    Note:
-        This function uses JAX for differentiation and JIT compilation and takes advantage of the fact that the Hessian of a sum is the sum of the Hessians.
-
-    """
-    def g(x):
-        fnx = np.array([f(x) for f in fns]).squeeze(0)
-        return np.sum(fnx, axis=0)
-    return jax.jit(jax.hessian(g))
 
 
 # defining these constraint functions in here and not using self.n_states, self.n_inputs etc. directly so that they are pure functions to keep jax happy
