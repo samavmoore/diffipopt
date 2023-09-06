@@ -7,14 +7,13 @@ from jax import core
 from jax.tree_util import Partial
 import inspect
 jax.config.update("jax_enable_x64", True)
-from solve import solve
-from api import Problem, ControlProblem, Constraint, BoundingBox
+from api import ControlProblem, BoundingBox, solve
 import matplotlib.pyplot as plt
 
 
 if __name__ == '__main__':
-    #plt.rc('text', usetex=True)
-    #plt.rc('font', family='serif')
+    plt.rc('text', usetex=True)
+    plt.rc('font', family='serif')
 
     # define structs for states, inputs, and parameters
     states = namedtuple('States', ['x', 'x_dot', 'theta', 'theta_dot'])
@@ -109,6 +108,15 @@ if __name__ == '__main__':
     plt.grid()
 
     plt.show()
+
+    # plotting the input
+    plt.figure()
+    plt.plot(t, inputs.f_x)
+    plt.xlabel('Time (s)')
+    plt.ylabel('Force (N)')
+    plt.grid()
+    plt.show()
+
 
     #print(type(out))
     #print(out.params)
