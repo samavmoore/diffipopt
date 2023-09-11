@@ -2,9 +2,6 @@ import jax
 import jax.numpy as np
 from collections import namedtuple
 from jax.tree_util import Partial
-import inspect
-import time
-from api import Problem, ControlProblem, Constraint, BoundingBox
 jax.config.update("jax_enable_x64", True)
 
 bound_box_func = namedtuple(
@@ -19,6 +16,7 @@ def initial_guess_traj_opt(problem_instance, parameters_instance):
         n_states = len(problem_instance.state_tup._fields)
         n_inputs = len(problem_instance.input_tup._fields)
         n_grid_pts = problem_instance.grid_pts
+        parameters_instance = problem_instance.param_tup(*parameters_instance)
 
         # Determine the number of decision variables based on the integration type
         if problem_instance.integration_type == 'trapezoidal':
@@ -53,200 +51,6 @@ def initial_guess_traj_opt(problem_instance, parameters_instance):
 
         return vars
         
-
-def check_control_problem(problem_instance):
-    '''Check if the fields of a ControlProblem namedtuple are valid and wrap callable fields/subfields with Partial'''
-     # Wrap functions in ControlProblem or Problem with Partial and perform error-checking
-    wrapped_fields = {}
-    bounding_box = {}
-    constraints = {}
-
-    for field in problem_instance._fields:
-        attr = getattr(problem_instance, field)
-        
-        # Check if final_cost and path_cost are functions with correct number of arguments
-        if field in ['final_cost', 'path_cost']:
-            if attr is None:
-                continue
-            if not callable(attr):
-                raise ValueError(f"{field} should be a callable function")
-            if len(inspect.signature(attr).parameters) != 3:
-                raise ValueError(f"{field} should accept exactly 3 arguments (states namedtuple, inputs namedtuple, parameters namedtuple)")
-        
-        # Check if the state constraint fields are of type BoundingBox and have correct number of arguments convert them to Partial
-        elif field in ['initial_state', 'path_state', 'final_state', 'input', 'final_time']: 
-            if attr is None:
-                raise ValueError(f"{field} should be not be None")
-            if not isinstance(attr, BoundingBox):
-                raise ValueError(f"{field} should be of type BoundingBox")
-            for subfield in attr._fields:
-                subattr = getattr(attr, subfield)
-                if subfield in ['lb', 'ub']:
-                    if not callable(subattr):
-                        raise ValueError(f"{field}.{subfield} should be a callable function")
-                    if len(inspect.signature(subattr).parameters) != 1:
-                        raise ValueError(f"{field}.{subfield} should accept exactly 1 argument (parameter namedtuple)")
-                    
-                    if not isinstance(subattr, Partial):
-                        bounding_box[subfield] = subattr #Partial(subattr)
-                    else:
-                        bounding_box[subfield] = subattr
-                else:
-                    raise ValueError(f"{field} should only have 'lb' and 'ub' fields")
-                
-            wrapped_fields[field] = BoundingBox(**bounding_box)
-            continue
-            
-        # Check if the 'g' fields are of type Constraint and have correct number of arguments convert them to Partial
-        elif field in ['initial_g', 'path_g', 'final_g']:
-            if attr is None:
-                continue 
-            if not isinstance(attr, Constraint):
-                raise ValueError(f"{field} should be of type Constraint")
-            for subfield in attr._fields:
-                subattr = getattr(attr, subfield)
-                if subfield == 'g':
-                    if not callable(subattr):
-                        raise ValueError(f"{field}.{subfield} should be a callable function")
-                    
-                    if len(inspect.signature(subattr).parameters) != 3:
-                            raise ValueError(f"{field}.{subfield} should accept exactly 3 arguments (states namedtuple, inputs namedtuple, parameters namedtuple)")
-                        
-                    if not isinstance(subattr, Partial):
-                        constraints[subfield] = subattr #Partial(subattr)
-                    else:
-                        constraints[subfield] = subattr
-
-                else:
-                    raise ValueError(f"{field} should only have 'g' field")
-            
-            wrapped_fields[field] = Constraint(**constraints)
-            continue
-
-        # check if state_tup and input_tup are namedtuples
-        elif field in ['state_tup', 'input_tup', 'param_tup']:
-            if not issubclass(attr, tuple) or not hasattr(attr, '_fields'):
-                raise ValueError(f"{field} should be of type namedtuple")
-            wrapped_fields[field] = attr
-            continue
-
-        
-        elif field == 'dynamics':
-            if not callable(attr):
-                raise ValueError(f"{field} should be a callable function")
-            if len(inspect.signature(attr).parameters) != 3:
-                raise ValueError(f"{field} should accept exactly 3 arguments (states namedtuple, inputs namedtuple, parameters namedtuple)")
-            
-        elif field == 'grid_pts':
-            if not isinstance(attr, int):
-                raise ValueError(f"{field} should be of type int")
-            if attr < 2:
-                raise ValueError(f"{field} should be greater than 1")
-        
-        elif field == 'options':
-            if attr is None:
-                continue
-            if not isinstance(attr, dict):
-                raise ValueError(f"{field} should be of type dict")
-
-        # Wrap callable fields with Partial
-        if callable(attr) and not isinstance(attr, Partial):
-            wrapped_fields[field] = attr #Partial(attr)
-        else:
-            wrapped_fields[field] = attr
-
-    return ControlProblem(**wrapped_fields)
-
-def check_problem(problem_instance):
-    '''Check if the fields of a Problem namedtuple are valid and wrap callable field/subfields with Partial'''
-    wrapped_fields = {}
-    bounding_box = {}
-    constraints = {}
-
-    for field in problem_instance._fields:
-        attr = getattr(problem_instance, field)
-
-        if field == 'cost':
-            if not callable(attr):
-                raise ValueError(f"{field} should be a callable function")
-            if len(inspect.signature(attr).parameters) != 2:
-                raise ValueError(f"{field} should accept exactly 2 arguments (vars namedtule,  parameters namedtuple)")
-        
-        elif field == 'constraints':
-            if attr is None:
-                continue
-            if not isinstance(attr, Constraint):
-                raise ValueError(f"{field} should be of type Constraint")
-            for subfield in attr._fields:
-                subattr = getattr(attr, subfield)
-                if subfield == 'g':
-                    if not callable(subattr):
-                        raise ValueError(f"{field}.{subfield} should be a callable function")
-                    
-                    if len(inspect.signature(subattr).parameters) != 2:
-                            raise ValueError(f"{field}.{subfield} should accept exactly 2 arguments (vars namedtuple, parameters namedtuple)")
-                        
-                    if not isinstance(subattr, Partial):
-                        constraints[subfield] = Partial(subattr)
-                    else:
-                        constraints[subfield] = subattr
-
-                else:
-                    raise ValueError(f"{field} should only have 'g' field")
-            
-            wrapped_fields[field] = Constraint(**constraints)
-            continue
-
-        elif field == 'bounds':
-            if attr is None:
-                continue
-            if not isinstance(attr, BoundingBox):
-                raise ValueError(f"{field} should be of type BoundingBox")
-            for subfield in attr._fields:
-                subattr = getattr(attr, subfield)
-                if subfield in ['lb', 'ub']:
-                    if not callable(subattr):
-                        raise ValueError(f"{field}.{subfield} should be a callable function")
-                    if len(inspect.signature(subattr).parameters) != 1:
-                        raise ValueError(f"{field}.{subfield} should accept exactly 1 argument (parameter namedtuple)")
-                    
-                    if not isinstance(subattr, Partial):
-                        bounding_box[subfield] = Partial(subattr)
-                    else:
-                        bounding_box[subfield] = subattr
-                else:
-                    raise ValueError(f"{field} should only have 'lb' and 'ub' fields")
-            
-            wrapped_fields[field] = BoundingBox(**bounding_box)
-            continue
-
-        elif field == 'options':
-            if attr is None:
-                continue
-            if not isinstance(attr, dict):
-                raise ValueError(f"{field} should be of type dict")
-
-    return Problem(**wrapped_fields)
-
-
-def initialize_problem(problem_instance):
-    '''
-        Initializes a optimization problem instance from a ControlProblem or Problem namedtuple by performing error-checking 
-        and making sure that functions are compatable with JAX transformations by wrapping them with jax.tree_util.Partial if not done so already.
-    '''
-
-    # Check if the instance is either a ControlProblem or a Problem
-    if not isinstance(problem_instance, (ControlProblem, Problem)):
-        raise TypeError('problem_instance must be of type ControlProblem or Problem (namedtuples)')
-    
-    # Check if the instance is a ControlProblem and wrap functions with Partial and perform error-checking
-    if isinstance(problem_instance, ControlProblem):
-        problem_instance = check_control_problem(problem_instance)
-    else:
-        problem_instance = check_problem(problem_instance)
-    
-    return problem_instance
-
 def _filter_lb(g_value, lb_val):
 
     def lb_finite(_):
@@ -321,7 +125,7 @@ def _get_A(n_states, n_inputs, grid_pts):
     
     return A
 
-def _summed_hessians_x_lambda(fns):
+def _summed_hessians_xx_lambda(fns):
     """
     Computes the Hessian matrix of a function, `g(x, lambdas)`, with respect to `x`, 
     where `g` is a linear combination of the functions in `fns` weighted by `lambdas` the lagrange multipliers.
@@ -346,13 +150,40 @@ def _summed_hessians_x_lambda(fns):
         This function uses JAX for differentiation and JIT compilation and takes advantage of the fact that the Hessian of a sum is the sum of the Hessians.
 
     """
-    def g(x, lambdas):
-        fnx = np.array([f(x) for f in fns]).squeeze(0)
+    def g(x, p, lambdas):
+        fnx = np.array([f(x, p) for f in fns]).squeeze(0)
         return np.dot(fnx, lambdas)
     return jax.jit(jax.hessian(g, argnums=0))
 
+def _summed_hessians_px_lambda(fns):
+    """
+    Computes the mixed partial derivatives of a function, `g(x, p, lambdas)`, with respect to `x` and `p`, 
+    where `g` is a linear combination of the functions in `fns` weighted by `lambdas` the Lagrange multipliers.
 
-def _summed_hessians_x(fns):
+    `g(x, p, lambdas)` is defined as the dot product of the evaluation of each function 
+    in `fns` at `(x, p)` and the `lambdas` vector.
+
+    Args:
+        fns (list[callable]): A list of functions to be combined. Each function should
+            accept two arguments (x, p) and return a scalar or array value.
+
+    Returns:
+        callable: A JIT-compiled function that computes the mixed partial derivatives of `g` with respect 
+        to `x` and `p`. The returned function accepts three arguments: `x`, `p`, and `lambdas`.
+
+    Example:
+        >>> fns = [lambda x, p: x**2 + p, lambda x, p: x**3 - p]
+        >>> jacobian_func = _summed_hessians_x_lambda(fns)
+        >>> jacobian_at_point = jacobian_func(2.0, 1.0, np.array([1.0, 2.0]))
+    """
+    def g(x, p, lambdas):
+        fn_xp = np.array([f(x, p) for f in fns]).squeeze(0)
+        return np.dot(fn_xp, lambdas)
+
+    return jax.jit(jax.jacobian(jax.grad(g, argnums=0), argnums=1))
+
+
+def _summed_hessians_xx(fns):
     """
     Computes the Hessian matrix of a function, `g(x)`, with respect to `x`, 
     where `g` is the sum of the evaluations of each function in `fns` at `x`.
@@ -374,7 +205,7 @@ def _summed_hessians_x(fns):
         This function uses JAX for differentiation and JIT compilation and takes advantage of the fact that the Hessian of a sum is the sum of the Hessians.
 
     """
-    def g(x):
-        fnx = np.array([f(x) for f in fns]).squeeze(0)
+    def g(x, p):
+        fnx = np.array([f(x, p) for f in fns]).squeeze(0)
         return np.sum(fnx, axis=0)
-    return jax.jit(jax.hessian(g))
+    return jax.jit(jax.hessian(g, argnums=0))

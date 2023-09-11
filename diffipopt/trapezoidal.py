@@ -4,8 +4,7 @@ import jax.numpy as np
 from jax.tree_util import Partial
 import scipy.sparse as sparse
 from collections import namedtuple
-from api import BoundingBox
-from common import _filter_lbs, _filter_ubs, _get_B, _get_A, bound_box_func, _summed_hessians_x_lambda, _summed_hessians_x
+from common import _filter_lbs, _filter_ubs, _get_B, _get_A, bound_box_func, _summed_hessians_xx_lambda, _summed_hessians_xx, _summed_hessians_px_lambda
 jax.config.update("jax_enable_x64", True)
 
 
@@ -40,48 +39,49 @@ class Trapezoidal():
         self.B = _get_B(self.n_states, self.grid_pts, self.d_tau)
 
         self._setup_functions()
-        self.objectives_x_p = self._setup_objective()
-        self.bound_box_x_p = self._generate_bound_box_funcs()
-        self.constraints_x_p, self.g_bounds = self._stack_constraints()
+        self._objectives = self._setup_objective()
+        self.bound_boxes = self._generate_bound_box_funcs()
+        self._constraints, self.g_bounds = self._stack_constraints()
+
+        self.all_constraints = self._constraints + self.bound_boxes
 
         self.gL, self.gU = np.concatenate([b.lb for b in self.g_bounds]), np.concatenate([b.ub for b in self.g_bounds])
-        self.constraints_x = [Partial(g, p=self.params) for g in self.constraints_x_p]
-        self.constraints_x_p_jit = [jax.jit(g) for g in self.constraints_x_p]
-        self.constraints_x_jit = [jax.jit(g) for g in self.constraints_x]
-        self.constraints_jac_x = [jax.jit(jax.jacobian(g)) for g in self.constraints_x]
-        self.constraints_jac_x_p = [jax.jit(jax.jacobian(g)) for g in self.constraints_x_p]
-        
-        self.constraints_hess_x_lamb = _summed_hessians_x_lambda(self.constraints_x)
-        self.constraints_hess_x = _summed_hessians_x(self.constraints_x)
-        
-        self.objectives_x = [Partial(f, p=self.params) for f in self.objectives_x_p]
-        self.objectives_x_p_jit = [jax.jit(f) for f in self.objectives_x_p]
-        self.objectives_x_jit = [jax.jit(f) for f in self.objectives_x]
-        self.obj_grad_x = [jax.jit(jax.grad(f)) for f in self.objectives_x]
-        self.obj_grad_x_p = [jax.jit(jax.grad(f)) for f in self.objectives_x_p]
-        self.obj_hess_x = [jax.jit(jax.hessian(f)) for f in self.objectives_x]
+        self._constraints = [jax.jit(g) for g in self._constraints]
+        self.constraints_jac_x = [jax.jit(jax.jacobian(g, argnums=0)) for g in self._constraints]
 
-        self.bound_box_x = [Partial(g, p=self.params) for g in self.bound_box_x_p]
+        self.all_constraints_jac_x = [jax.jit(jax.jacobian(g, argnums=0)) for g in self.all_constraints]
+        self.all_constraints_jac_p = [jax.jit(jax.jacobian(g, argnums=1)) for g in self._constraints]
+        
+        self.constraints_hess_xx_lam = _summed_hessians_xx_lambda(self._constraints)
+        self.constraints_hess_xx = _summed_hessians_xx(self._constraints)
+
+        self.all_constraints_hess_px_lam = _summed_hessians_px_lambda(self.all_constraints)
+        self.all_constraints_hess_xx_lam = _summed_hessians_xx_lambda(self.all_constraints)
+        
+        self._objectives = [jax.jit(f) for f in self._objectives]
+        self.obj_grad_x = [jax.jit(jax.grad(f, argnums=0)) for f in self._objectives]
+        self.obj_hess_px = [jax.jit(jax.jacobian(jax.grad(f, argnums=0), argnums=1)) for f in self._objectives]
+        self.obj_hess_xx = [jax.jit(jax.hessian(f, argnums=0)) for f in self._objectives]
 
         self.j_struct = self._jacobianstructure()
         self.h_struct = self._hessianstructure()
 
     def objective(self, x):
-        return np.sum(np.array([f(x) for f in self.objectives_x_jit]))
+        return np.sum(np.array([f(x, self.params) for f in self._objectives]))
     
     def gradient(self, x):
-        return np.array([f(x) for f in self.obj_grad_x])
+        return np.array([f(x, self.params) for f in self.obj_grad_x])
     
     def constraints(self, x):
-        return np.array([g(x) for g in self.constraints_x_jit])
+        return np.array([g(x, self.params) for g in self._constraints])
 
     def jacobian(self, x):
-        Jac = np.array([g(x) for g in self.constraints_jac_x]).squeeze(0)
-        return Jac[self.j_struct.row, self.j_struct.col]
+        jac = np.array([g(x, self.params) for g in self.constraints_jac_x]).squeeze(0)
+        return jac[self.j_struct.row, self.j_struct.col]
     
     def hessian(self, x, lagrange, obj_factor):
-        H_obj = np.array([f(x) for f in self.obj_hess_x])
-        H_constraints = self.constraints_hess_x_lamb(x, lagrange)
+        H_obj = np.array([f(x, self.params) for f in self.obj_hess_xx])
+        H_constraints = self.constraints_hess_xx_lam(x, self.params, lagrange)
         Hess = np.array(obj_factor * H_obj + H_constraints)
         return Hess[self.h_struct.row, self.h_struct.col]
     
@@ -93,18 +93,18 @@ class Trapezoidal():
 
     def _jacobianstructure(self):
         point = jax.random.normal(jax.random.PRNGKey(0), (self.n_vars, ))*10.
-        jac = np.array([g(point) for g in self.constraints_jac_x]).squeeze(0)
+        jac = np.array([g(point, self.params) for g in self.constraints_jac_x]).squeeze(0)
         js = sparse.coo_matrix(jac != 0)
         return js
     
     def _hessianstructure(self):
         point = jax.random.normal(jax.random.PRNGKey(0), (self.n_vars,))*10.
         # Assuming the functions return full Hessians
-        hess_obj = np.array([f(point) for f in self.obj_hess_x]).squeeze(0)
+        hess_obj = np.array([f(point, self.params) for f in self.obj_hess_xx]).squeeze(0)
         hess_obj_structure = (hess_obj != 0).astype(int)
 
         # Get the non-zero structures of each constraint Hessian
-        hess_constraints_structure = (self.constraints_hess_x(point) != 0).astype(int)
+        hess_constraints_structure = (self.constraints_hess_xx(point, self.params) != 0).astype(int)
 
         # Combine the objective and constraints structures
         combined_structure = np.logical_or(hess_obj_structure, (hess_constraints_structure > 0))
@@ -112,7 +112,7 @@ class Trapezoidal():
         return hs
 
     def _setup_functions(self):
-        
+
         def _get_jit_wrapped_function(function):
             if function is not None:
                 return self._wrap_n_jit(function)
@@ -141,6 +141,7 @@ class Trapezoidal():
         return obj_list
     
     def _stack_constraints(self):
+        import api
 
         stacked_constraints = []
         stacked_bounds = []
@@ -148,7 +149,7 @@ class Trapezoidal():
         # add the dynamics constraints to the stack, wrap them in a partial to evaluate the function with the correct number of states, inputs, and grid points
         stacked_constraints.append(jax.jit(Partial(_transcribed_dynamics, f=self.dynamics, n_states=self.n_states, n_inputs=self.n_inputs, grid_pts=self.grid_pts, A=self.A, B=self.B)))
         dynamics_bounds = np.zeros((self.n_states * (self.grid_pts-1), ))
-        stacked_bounds.append(BoundingBox(lb=dynamics_bounds, ub=dynamics_bounds))
+        stacked_bounds.append(api.BoundingBox(lb=dynamics_bounds, ub=dynamics_bounds))
 
         if self.problem.initial_g is not None:
             
@@ -157,7 +158,7 @@ class Trapezoidal():
             initial_g_size = self.initial_g(np.zeros((self.n_states + self.n_inputs, )), self.params).shape[0]
             initial_g_ub = np.zeros((initial_g_size, ))
             initial_g_lb = np.zeros((initial_g_size, )) - np.inf
-            stacked_bounds.append(BoundingBox(lb=initial_g_lb, ub=initial_g_ub))
+            stacked_bounds.append(api.BoundingBox(lb=initial_g_lb, ub=initial_g_ub))
 
         
         if self.problem.path_g is not None:
@@ -168,7 +169,7 @@ class Trapezoidal():
             path_g_size = path_g_size * (self.grid_pts - 2)
             path_g_ub = np.zeros((path_g_size, ))
             path_g_lb = np.zeros((path_g_size, )) - np.inf
-            stacked_bounds.append(BoundingBox(lb=path_g_lb, ub=path_g_ub))
+            stacked_bounds.append(api.BoundingBox(lb=path_g_lb, ub=path_g_ub))
 
         if self.problem.final_g is not None:
             
@@ -177,8 +178,8 @@ class Trapezoidal():
             final_g_size = self.final_g(np.zeros((self.n_states + self.n_inputs, )), self.params).shape[0]
             final_g_ub = np.zeros((final_g_size, ))
             final_g_lb = np.zeros((final_g_size, )) - np.inf
-            stacked_bounds.append(BoundingBox(lb=final_g_lb, ub=final_g_ub))
-            stacked_bounds = BoundingBox(*np.concatenate(stacked_bounds, axis=0))
+            stacked_bounds.append(api.BoundingBox(lb=final_g_lb, ub=final_g_ub))
+            stacked_bounds = api.BoundingBox(*np.concatenate(stacked_bounds, axis=0))
 
         return stacked_constraints, stacked_bounds
     
