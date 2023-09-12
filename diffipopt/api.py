@@ -2,7 +2,7 @@ from collections import namedtuple
 import jax
 import jax.numpy as np
 import cyipopt
-from trapezoidal import Trapezoidal
+from trapezoidal import Trapezoidal, Trapezoidal_Meta_Data
 from hermite_simpson import HermiteSimpson
 from standard import Standard
 from jax.tree_util import Partial
@@ -48,8 +48,61 @@ def solve(parameters_instance, problem_instance):
     # initialize the problem instance
     print("Initializing problem")
     prblm = _initialize_problem(problem_instance)
-    parameters_instance = jax.lax.stop_gradient(parameters_instance)
+    params = jax.lax.stop_gradient(parameters_instance)
 
+    meta_dat_shape_dtype = jax.ShapeDtypeStruct(shape=(1, 3), dtype=np.int64)
+    dat_shapes = jax.pure_callback(define_meta_getter(prblm), meta_dat_shape_dtype, params, vectorized=False)
+    n_vars, n_constraints, n_params = dat_shapes[0, 0], dat_shapes[0, 1], dat_shapes[0, 2]
+    n_constraints = n_constraints + 2*n_vars # for the bounds on the decision variables including all of the states and inputs and the final time
+
+    if isinstance(params, jax.core.Tracer):
+        # seeing if the computation is being traced (i.e., during vectorized evaluation)
+        n_vars = n_vars.val[0]
+        n_constraints = n_constraints.val[0]
+        n_params = n_params.val[0]
+
+    _solve = _define_solve(prblm)
+
+    x_shape_dtype = jax.ShapeDtypeStruct(shape=(1, n_vars), dtype=np.float64)
+    lam_shape_dtype = jax.ShapeDtypeStruct(shape=(1, n_constraints), dtype=np.float64)
+
+    x, lam = jax.pure_callback(_solve, (x_shape_dtype, lam_shape_dtype), params, vectorized=False)
+
+    #tf = x[0, 0]
+    #states_inputs = x[0, 1:].reshape((grid_pts, n_states + n_inputs))
+    #states = states_inputs[:, :n_states]
+    #inputs = states_inputs[:, n_states:]
+    #states = problem_instance.state_tup(*states.T)
+    #inputs = problem_instance.input_tup(*inputs.T)
+            
+    return x, lam
+
+def define_meta_getter(prblm):
+    
+    def meta_getter(params):
+
+        if hasattr(prblm, 'integration_type'):
+            if prblm.integration_type == 'trapezoidal':
+                problem_cls = Trapezoidal_Meta_Data(prblm, params)
+            #elif prblm.integration_type == 'hermite-simpson':
+            #    problem_cls = HermiteSimpson_Meta_Data(prblm, params)
+            #else:
+            #    raise ValueError('integration_type must be either "trapezoidal" or "hermite-simpson"')
+
+        #elif isinstance(prblm, Problem):
+        #    problem_cls = Standard(prblm, params)
+
+        n_vars = problem_cls.n_vars
+        n_constraints = problem_cls.n_constraints
+        n_params = problem_cls.n_params
+        
+        return np.array([n_vars, n_constraints, n_params]).reshape((1, 3)).astype(np.int64)
+    
+    return meta_getter
+
+
+def _define_solve(prblm):
+    
     def _solve(params):
 
         if hasattr(prblm, 'integration_type'):
@@ -62,7 +115,7 @@ def solve(parameters_instance, problem_instance):
 
         elif isinstance(prblm, Problem):
             problem_cls = Standard(prblm, params)
-        
+
         xL, xU = problem_cls.xL, problem_cls.xU
         gL, gU = problem_cls.gL, problem_cls.gU
         x0 = initial_guess_traj_opt(prblm, params)
@@ -73,34 +126,103 @@ def solve(parameters_instance, problem_instance):
 
         print("Solving problem")
         x, info = nlp.solve(x0)
+        
+        lam_g = info['mult_g']
+        lam_xL = info['mult_x_L']
+        lam_xU = info['mult_x_U']
+        lam = np.concatenate([lam_g, lam_xL, lam_xU])
 
-        return x.astype(np.float64).reshape((-1, problem_cls.n_vars))
+        return x.astype(np.float64).reshape((-1, problem_cls.n_vars)), lam.astype(np.float64).reshape((-1, problem_cls.n_constraints))
+
+    return _solve
+        
+
+
+solve = jax.custom_jvp(solve, nondiff_argnums=(1,))
+
+def _define_KKT_solve(prblm):
+
+    def _KKT_solve(params):
+        if hasattr(prblm, 'integration_type'):
+            if prblm.integration_type == 'trapezoidal':
+                problem_cls = Trapezoidal(prblm, params)
+            elif prblm.integration_type == 'hermite-simpson':
+                problem_cls = HermiteSimpson(prblm, params)
+            else:
+                raise ValueError('integration_type must be either "trapezoidal" or "hermite-simpson"')
+
+        elif isinstance(prblm, Problem):
+            problem_cls = Standard(prblm, params)
+
+        xL, xU = problem_cls.xL, problem_cls.xU
+        gL, gU = problem_cls.gL, problem_cls.gU
+        x0 = initial_guess_traj_opt(prblm, params)
+        nlp = cyipopt.Problem(n=len(x0), m=len(gL), problem_obj=problem_cls, lb=xL, ub=xU, cl=gL, cu=gU)
+        nlp.add_option('tol', 1e-4)
+        nlp.add_option('max_iter', int(1e5))
+        nlp.add_option('nlp_scaling_method', 'gradient-based')
+
+        print("Solving problem")
+        x, info = nlp.solve(x0)
+        
+        lam_g = info['mult_g']
+        lam_xL = info['mult_x_L']
+        lam_xU = info['mult_x_U']
+        lam = np.concatenate([lam_g, lam_xL, lam_xU])
+
+        dKKT_dp = del_KKT_del_p(problem_cls, params, (x, lam_g, lam_xL, lam_xU))
+        dKKT_dx_lambda = del_KKT_del_x_lambda(problem_cls, params, (x, lam_g, lam_xL, lam_xU))
+        dKKT_dx_lambda = dKKT_dx_lambda + np.eye(dKKT_dx_lambda.shape[0]) * 1e-6
+        dx_lam_dp = -np.linalg.solve(dKKT_dx_lambda, dKKT_dp)
+
+        x = x.astype(np.float64).reshape((-1, problem_cls.n_vars))
+        lam = lam.astype(np.float64).reshape((-1, problem_cls.n_constraints))
+
+        dx_lam_dp = dx_lam_dp.astype(np.float64).reshape((problem_cls.n_vars + problem_cls.n_constraints, problem_cls.n_params))
+
+        return x, lam, dx_lam_dp
     
-    n_states = len(prblm.state_tup._fields)
-    n_inputs = len(prblm.input_tup._fields)
-    grid_pts = prblm.grid_pts
-    n_vars = (n_states + n_inputs)*grid_pts + 1
+    return _KKT_solve
 
-    result_shape_dtype = jax.ShapeDtypeStruct(shape=(1, n_vars), dtype=np.float64)
-
-    x = jax.pure_callback(_solve, result_shape_dtype, parameters_instance, vectorized=False)
-
-    tf = x[0, 0]
-    states_inputs = x[0, 1:].reshape((grid_pts, n_states + n_inputs))
-    states = states_inputs[:, :n_states]
-    inputs = states_inputs[:, n_states:]
-    states = problem_instance.state_tup(*states.T)
-    inputs = problem_instance.input_tup(*inputs.T)
-            
-    return tf, states, inputs
-    
-
-solve = jax.custom_jvp(solve)
 
 @solve.defjvp
-def _solve_jvp(primals, tangents):
+def _solve_jvp(prblm, primals, tangents):
+    (parameters_instance, ) = primals
+    (parameters_instance_dot, ) = tangents
 
-    return primals, tangents
+    # initialize the problem instance
+    print("Initializing problem")
+    prblm = _initialize_problem(prblm)
+    params = jax.lax.stop_gradient(parameters_instance)
+
+    meta_dat_shape_dtype = jax.ShapeDtypeStruct(shape=(1, 3), dtype=np.int64)
+    dat_shapes = jax.pure_callback(define_meta_getter(prblm), meta_dat_shape_dtype, params, vectorized=False)
+    n_vars, n_constraints, n_params = dat_shapes[0, 0], dat_shapes[0, 1], dat_shapes[0, 2]
+    n_constraints = n_constraints + 2*n_vars # for the bounds on the decision variables including all of the states and inputs and the final time
+
+    if isinstance(params, jax.core.Tracer):
+        # seeing if the computation is being traced (i.e., during vectorized evaluation)
+        n_vars = n_vars.val[0]
+        n_constraints = n_constraints.val[0]
+        n_params = n_params.val[0]
+
+    _KKT_solve = _define_KKT_solve(prblm)
+
+    x_shape_dtype = jax.ShapeDtypeStruct(shape=(1, n_vars), dtype=np.float64)
+    lam_shape_dtype = jax.ShapeDtypeStruct(shape=(1, n_constraints), dtype=np.float64)
+    dx_lam_dp_shape_dtype = jax.ShapeDtypeStruct(shape=(n_vars + n_constraints, n_params), dtype=np.float64)
+
+
+    x, lam, dx_lam_dp  = jax.pure_callback(_KKT_solve, (x_shape_dtype, lam_shape_dtype, dx_lam_dp_shape_dtype), params, vectorized=False)
+
+    tanget_out = dx_lam_dp @ np.array([*parameters_instance_dot])
+
+    tanget_out_x = tanget_out[:n_vars].reshape((1, n_vars))
+    tanget_out_lam = tanget_out[n_vars:].reshape((1, n_constraints))
+
+    return (x, lam), (tanget_out_x, tanget_out_lam)
+
+
 
 def del_KKT_del_p(problem_cls, parameters_instance, solution):
     prob = problem_cls
@@ -108,26 +230,35 @@ def del_KKT_del_p(problem_cls, parameters_instance, solution):
     x, lam_g, lam_xL, lam_xU = solution
     lams = np.concatenate([lam_g, lam_xL, lam_xU])
 
-    top = np.array([prob.obj_hess_px(x, params) + prob.all_constraints_hess_px_lam(x, params, lams)])
+    obj_hess_px = np.array([f(x, params) for f in prob.obj_hess_px]).squeeze(0).T
+    con_hess_px_dot_lam = np.vstack([*prob.all_constraints_hess_px_lam(x, params, lams)]).T
+    top_block = obj_hess_px + con_hess_px_dot_lam
 
-    jac_g_p = prob.all_constraints_jac_p(x, params)
+    jac_g_p = [g(x, params) for g in prob.all_constraints_jac_p]
 
-    bottom = np.vstack([lams[i]*jac_g_p[i, :] for i in range(len(lams))])
+    jac_g_p = np.vstack([np.vstack([*jac]).T for jac in jac_g_p])
 
-    return np.vstack([top, bottom])
+    bottom_block = jac_g_p * lams[:, np.newaxis]
 
-def del_KKT_del_x_lambda(problem_instance, parameters_instance, solution):
-    prob = problem_instance
+    return np.vstack([top_block, bottom_block])
+
+def del_KKT_del_x_lambda(problem_cls, parameters_instance, solution):
+    prob = problem_cls
     params = parameters_instance
     x, lam_g, lam_xL, lam_xU = solution
     lams = np.concatenate([lam_g, lam_xL, lam_xU])
 
-    block_00 = prob.obj_hess_xx(x, params) + prob.all_constraints_hess_xx_lam(x, params, lams)
-    block_01 = prob.all_constraints_jac_x(x, params)
-    block_10 = prob.all_constraints_jac_x(x, params).T @ np.diag(lams)
-    block_11 = np.diag(prob.all_constraints(x, params))
+    obj_hess_xx = np.array([f(x, params) for f in prob.obj_hess_xx]).squeeze(0)
+    con_hess_xx_dot_lam = prob.all_constraints_hess_xx_lam(x, params, lams)
+    block_00 =  obj_hess_xx + con_hess_xx_dot_lam
+    block_01 = np.vstack([g(x, params) for g in prob.all_constraints_jac_x]).T
+    block_10 = np.diag(lams) @ block_01.T
+    block_11 = np.diag(np.concatenate([g(x, params) for g in prob.all_constraints]))
 
-    return np.array([[block_00, block_01], [block_10, block_11]])
+    top = np.hstack([block_00, block_01])
+    bottom = np.hstack([block_10, block_11])
+
+    return np.vstack([top, bottom])
 
 
 def _check_control_problem(problem_instance):

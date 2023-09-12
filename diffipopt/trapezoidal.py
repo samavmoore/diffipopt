@@ -7,6 +7,152 @@ from collections import namedtuple
 from common import _filter_lbs, _filter_ubs, _get_B, _get_A, bound_box_func, _summed_hessians_xx_lambda, _summed_hessians_xx, _summed_hessians_px_lambda
 jax.config.update("jax_enable_x64", True)
 
+class Trapezoidal_Meta_Data():
+        def __init__(self, Problem, Parameters):
+
+            self.problem = Problem
+            self.params = Problem.param_tup(*Parameters)
+            self.n_states = len(Problem.state_tup._fields)
+            self.n_inputs = len(Problem.input_tup._fields)
+            self.n_params = len(Problem.param_tup._fields)
+            self.states = Problem.state_tup
+            self.inputs = Problem.input_tup
+            self.grid_pts = Problem.grid_pts
+            self.n_vars = Problem.grid_pts * (self.n_states + self.n_inputs) + 1
+            self.d_tau = 1/(Problem.grid_pts - 1) # this is the non-dimensional time step
+
+            self.A = _get_A(self.n_states, self.n_inputs, self.grid_pts)
+            self.B = _get_B(self.n_states, self.grid_pts, self.d_tau)
+
+            self._setup_functions()
+            self._constraints, self.g_bounds = self._stack_constraints()
+
+            probe_x = np.zeros((self.n_vars, ))
+            self.n_constraints = np.concatenate([g(probe_x, self.params) for g in self._constraints]).shape[0]
+
+        def _setup_functions(self):
+
+            def _get_wrapped_function(function):
+                if function is not None:
+                    return self._wrap(function)
+                return None
+
+            functions = {
+                "dynamics": self.problem.dynamics,
+                "path_cost": self.problem.path_cost,
+                "final_cost": self.problem.final_cost,
+                "initial_g": getattr(self.problem.initial_g, "g", None),
+                "path_g": getattr(self.problem.path_g, "g", None),
+                "final_g": getattr(self.problem.final_g, "g", None)
+            }
+
+            for name, func in functions.items():
+                setattr(self, name, _get_wrapped_function(func))
+
+        def _stack_constraints(self):
+            import api
+
+            stacked_constraints = []
+            stacked_bounds = []
+            
+            # add the dynamics constraints to the stack, wrap them in a partial to evaluate the function with the correct number of states, inputs, and grid points
+            stacked_constraints.append(jax.jit(Partial(_transcribed_dynamics, f=self.dynamics, n_states=self.n_states, n_inputs=self.n_inputs, grid_pts=self.grid_pts, A=self.A, B=self.B)))
+            dynamics_bounds = np.zeros((self.n_states * (self.grid_pts-1), ))
+            stacked_bounds.append(api.BoundingBox(lb=dynamics_bounds, ub=dynamics_bounds))
+
+            if self.problem.initial_g is not None:
+                
+                stacked_constraints.append(Partial(_transcribed_initial_g, g_0=self.initial_g, n_states=self.n_states, n_inputs=self.n_inputs))
+                # probe the initial constraint function to get the upper and lower bound size
+                initial_g_size = self.initial_g(np.zeros((self.n_states + self.n_inputs, )), self.params).shape[0]
+                initial_g_ub = np.zeros((initial_g_size, ))
+                initial_g_lb = np.zeros((initial_g_size, )) - np.inf
+                stacked_bounds.append(api.BoundingBox(lb=initial_g_lb, ub=initial_g_ub))
+
+            
+            if self.problem.path_g is not None:
+                
+                stacked_constraints.append(Partial(_transcribed_path_g, g_path=self.path_g, n_states=self.n_states, n_inputs=self.n_inputs, grid_pts=self.grid_pts))
+                # probe the path constraint function to get the upper and lower bound size
+                path_g_size = self.path_g(np.zeros((self.n_states + self.n_inputs, )), self.params).shape[0]
+                path_g_size = path_g_size * (self.grid_pts - 2)
+                path_g_ub = np.zeros((path_g_size, ))
+                path_g_lb = np.zeros((path_g_size, )) - np.inf
+                stacked_bounds.append(api.BoundingBox(lb=path_g_lb, ub=path_g_ub))
+
+            if self.problem.final_g is not None:
+                
+                stacked_constraints.append(Partial(transcribed_final_g, g_f=self.final_g, n_states=self.n_states, n_inputs=self.n_inputs))
+                # probe the final constraint function to get the upper and lower bound size
+                final_g_size = self.final_g(np.zeros((self.n_states + self.n_inputs, )), self.params).shape[0]
+                final_g_ub = np.zeros((final_g_size, ))
+                final_g_lb = np.zeros((final_g_size, )) - np.inf
+                stacked_bounds.append(api.BoundingBox(lb=final_g_lb, ub=final_g_ub))
+                stacked_bounds = api.BoundingBox(*np.concatenate(stacked_bounds, axis=0))
+
+            return stacked_constraints, stacked_bounds
+        
+        def _wrap(self, f):
+            def wrapped_f(x, p):
+                states = self.states(*x[:self.n_states])
+                inputs = self.inputs(*x[self.n_states:])
+                return np.array(f(states, inputs, p)).T.squeeze()
+            return wrapped_f
+
+        def _generate_bound_box_funcs(self):
+            """
+            This function turns the bounding box constraints into a list of functions that can be evaluated with the parameters and the variables
+
+            xL <= x <= xU -> xL -x <= 0 and  x - xU <= 0 while filtering out the constraints with infinite bounds or None bounds
+            """
+            # bound_box_func is a named tuple with the following fields:
+            # name: name of the bounding box constraint
+            # start: start index of the constraint
+            # end: end index of the constraint
+            # bound_func1: function to evaluate the bound (this is typically all thats needed for initial and final states and inputs)
+            # bound_func2: this is used for path constraints states and inputs need to be bounded along the trajectory
+            # filter_func: (_filter_lb or _filter_ub) this is used to filter out the constraints with infinite bounds or None bounds
+            # Lower bound constraints
+            final_time_lb = bound_box_func("final_time_lb", 0, 1, self.problem.final_time.lb, None, _filter_lbs)
+            initial_state_lb = bound_box_func("initial_state_lb", 1, self.n_states+1, self.problem.initial_state.lb, None, _filter_lbs)
+            initial_input_lb = bound_box_func("initial_input_lb", self.n_states+1, self.n_states+self.n_inputs+1, self.problem.input.lb, None, _filter_lbs)
+            path_lb = bound_box_func("path_lb", self.n_states+self.n_inputs+1, self.n_vars-self.n_states-self.n_inputs, self.problem.path_state.lb, self.problem.input.lb, _filter_lbs)
+            final_state_lb = bound_box_func("final_state_lb", self.n_vars-self.n_states-self.n_inputs, self.n_vars-self.n_inputs, self.problem.final_state.lb, None, _filter_lbs)
+            final_input_lb = bound_box_func("final_input_lb", self.n_vars-self.n_inputs, self.n_vars, self.problem.input.lb, None, _filter_lbs)
+
+            # Upper bound constraints
+            final_time_ub = bound_box_func("final_time_ub", 0, 1, self.problem.final_time.ub, None, _filter_ubs)
+            initial_state_ub = bound_box_func("initial_state_ub", 1, self.n_states+1, self.problem.initial_state.ub, None, _filter_ubs)
+            initial_input_ub = bound_box_func("initial_input_ub", self.n_states+1, self.n_states+self.n_inputs+1, self.problem.input.ub, None, _filter_ubs)
+            path_ub = bound_box_func("path_ub", self.n_states+self.n_inputs+1, self.n_vars-self.n_states-self.n_inputs, self.problem.path_state.ub, self.problem.input.ub, _filter_ubs)
+            final_state_ub = bound_box_func("final_state_ub", self.n_vars-self.n_states-self.n_inputs, self.n_vars-self.n_inputs, self.problem.final_state.ub, None, _filter_ubs)
+            final_input_ub = bound_box_func("final_input_ub", self.n_vars-self.n_inputs, self.n_vars, self.problem.input.ub, None, _filter_ubs)
+
+            bound_box_functions = [
+                final_time_lb, initial_state_lb, initial_input_lb, path_lb, final_state_lb, final_input_lb,
+                final_time_ub, initial_state_ub, initial_input_ub, path_ub, final_state_ub, final_input_ub
+            ]
+
+            bounding_box_funcs = []
+
+            for box_func in bound_box_functions:
+                if box_func.name == "path_lb" or box_func.name == "path_ub":
+                    bounding_box_funcs.append(Partial(path_bounding_box_constraints, 
+                                                    start=box_func.start, 
+                                                    end=box_func.end, 
+                                                    bound_func1=box_func.bound_func1, 
+                                                    bound_func2=box_func.bound_func2, 
+                                                    filter_func=box_func.filter_func, 
+                                                    bounds_size=self.grid_pts))
+                else:
+                    bounding_box_funcs.append(Partial(bounding_box_constraint, 
+                                                    start=box_func.start, 
+                                                    end=box_func.end, 
+                                                    bound_func=box_func.bound_func1, 
+                                                    filter_func=box_func.filter_func))
+
+            return bounding_box_funcs
+
 
 class Trapezoidal():
     def __init__(self, Problem, Parameters):
@@ -28,6 +174,7 @@ class Trapezoidal():
         self.params = Problem.param_tup(*Parameters)
         self.n_states = len(Problem.state_tup._fields)
         self.n_inputs = len(Problem.input_tup._fields)
+        self.n_params = len(Problem.param_tup._fields)
         self.states = Problem.state_tup
         self.inputs = Problem.input_tup
         self.grid_pts = Problem.grid_pts
@@ -44,13 +191,15 @@ class Trapezoidal():
         self._constraints, self.g_bounds = self._stack_constraints()
 
         self.all_constraints = self._constraints + self.bound_boxes
+        probe_x = np.zeros((self.n_vars, ))
+        self.n_constraints = np.concatenate([g(probe_x, self.params) for g in self.all_constraints]).shape[0]
 
         self.gL, self.gU = np.concatenate([b.lb for b in self.g_bounds]), np.concatenate([b.ub for b in self.g_bounds])
         self._constraints = [jax.jit(g) for g in self._constraints]
         self.constraints_jac_x = [jax.jit(jax.jacobian(g, argnums=0)) for g in self._constraints]
 
         self.all_constraints_jac_x = [jax.jit(jax.jacobian(g, argnums=0)) for g in self.all_constraints]
-        self.all_constraints_jac_p = [jax.jit(jax.jacobian(g, argnums=1)) for g in self._constraints]
+        self.all_constraints_jac_p = [jax.jit(jax.jacobian(g, argnums=1)) for g in self.all_constraints]
         
         self.constraints_hess_xx_lam = _summed_hessians_xx_lambda(self._constraints)
         self.constraints_hess_xx = _summed_hessians_xx(self._constraints)

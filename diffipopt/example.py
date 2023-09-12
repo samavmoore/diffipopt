@@ -79,11 +79,14 @@ if __name__ == '__main__':
         grid_pts=grid_pts
     )
 
-    tf, states, inputs = solve(cartpole_params, problem)
+    #x, lam = solve(cartpole_params, problem)
     #vmapped_solve = jax.vmap(Partial(solve, problem_instance=problem), in_axes=(0,))
     #params = np.array([cartpole_params, cartpole_params, cartpole_params, cartpole_params])
-    #tf, states, inputs = vmapped_solve(params)
+    #x, lam = vmapped_solve(params)
 
+    
+    dx_dp, dlam_dp = jax.jacobian(solve)(cartpole_params, problem)
+    
 
     t = np.linspace(0, tf, grid_pts)
     plt.figure()

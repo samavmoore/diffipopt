@@ -151,7 +151,7 @@ def _summed_hessians_xx_lambda(fns):
 
     """
     def g(x, p, lambdas):
-        fnx = np.array([f(x, p) for f in fns]).squeeze(0)
+        fnx = np.concatenate([f(x, p) for f in fns])
         return np.dot(fnx, lambdas)
     return jax.jit(jax.hessian(g, argnums=0))
 
@@ -177,7 +177,7 @@ def _summed_hessians_px_lambda(fns):
         >>> jacobian_at_point = jacobian_func(2.0, 1.0, np.array([1.0, 2.0]))
     """
     def g(x, p, lambdas):
-        fn_xp = np.array([f(x, p) for f in fns]).squeeze(0)
+        fn_xp = np.concatenate([f(x, p) for f in fns])
         return np.dot(fn_xp, lambdas)
 
     return jax.jit(jax.jacobian(jax.grad(g, argnums=0), argnums=1))
@@ -206,6 +206,6 @@ def _summed_hessians_xx(fns):
 
     """
     def g(x, p):
-        fnx = np.array([f(x, p) for f in fns]).squeeze(0)
+        fnx = np.concatenate([f(x, p) for f in fns])
         return np.sum(fnx, axis=0)
     return jax.jit(jax.hessian(g, argnums=0))
