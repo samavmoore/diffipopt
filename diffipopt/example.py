@@ -85,43 +85,61 @@ if __name__ == '__main__':
     #x, lam = vmapped_solve(params)
 
     
-    dx_dp, dlam_dp = jax.jacobian(solve)(cartpole_params, problem)
-    
+    #dx_dp, dlam_dp = jax.jacobian(solve)(cartpole_params, problem)
 
-    t = np.linspace(0, tf, grid_pts)
-    plt.figure()
-    plt.subplot(2, 2, 1)
-    plt.plot(t, states.x)
-    plt.xlabel('Time (s)')
-    plt.ylabel('Cart Position (m)')
-    plt.grid()
+    n_states = 4
+    n_inputs = 1
+    del_params = params(m_c=0.5, m_p=0.0, l=0.0, dist=0.1, f_max=0.0, tf=0.0)
+    solve_  = Partial(solve, problem_instance=problem)
+    soln, jvp = jax.jvp(solve_, (cartpole_params,), (del_params,))
+    x, lam = soln
+    dx_dp, dlam_dp = jvp
 
-    plt.subplot(2, 2, 2)
-    plt.plot(t, states.x_dot)
-    plt.xlabel('Time (s)')
-    plt.ylabel('Cart Velocity (m/s)')
-    plt.grid()
+    perturbed_params = cartpole_params._replace(m_c=cartpole_params.m_c+del_params.m_c, m_p=cartpole_params.m_p+del_params.m_p, l=cartpole_params.l+del_params.l, dist=cartpole_params.dist+del_params.dist, f_max=cartpole_params.f_max+del_params.f_max, tf=cartpole_params.tf+del_params.tf)
+    x_perturbed, lam_perturbed = solve(perturbed_params, problem)
 
-    plt.subplot(2, 2, 3)
-    plt.plot(t, states.theta)
-    plt.xlabel('Time (s)')
-    plt.ylabel('Pole Angle (rad)')
-    plt.grid()
+    tf = x[0, 0]
+    states_inputs = x[0, 1:].reshape((grid_pts, n_states + n_inputs))
+    states_soln = states_inputs[:, :n_states]
+    inputs_soln = states_inputs[:, n_states:]
+    states_soln = states(*states_soln.T)
+    inputs_soln = inputs(*inputs_soln.T)
 
-    plt.subplot(2, 2, 4)
-    plt.plot(t, states.theta_dot)
-    plt.xlabel('Time (s)')
-    plt.ylabel('Pole Angular Velocity (rad/s)')
-    plt.grid()
+    d_tf = dx_dp[0, 0]
+    d_states_inputs = dx_dp[0, 1:].reshape((grid_pts, n_states + n_inputs))
+    d_states = d_states_inputs[:, :n_states]
+    d_inputs = d_states_inputs[:, n_states:]
+    d_states = states(*d_states.T)
+    d_inputs = inputs(*d_inputs.T)
 
+    tf_perturbed = x_perturbed[0, 0]
+    states_inputs_perturbed = x_perturbed[0, 1:].reshape((grid_pts, n_states + n_inputs))
+    states_soln_perturbed = states_inputs_perturbed[:, :n_states]
+    inputs_soln_perturbed = states_inputs_perturbed[:, n_states:]
+    states_soln_perturbed = states(*states_soln_perturbed.T)
+    inputs_soln_perturbed = inputs(*inputs_soln_perturbed.T)
+
+    # plot x vs xdot and dx_dp dxdot_dp with quiver
+    plt.figure(figsize=(8, 6))
+    plt.plot(states_soln.x, states_soln.x_dot, 'b')
+    plt.plot(states_soln_perturbed.x, states_soln_perturbed.x_dot, 'r--')
+    plt.plot(states_soln.x+d_states.x, states_soln.x_dot+d_states.x_dot, 'y')
+    #plt.quiver(states_soln.x, states_soln.x_dot, d_states.x, d_states.x_dot, color='r', width=0.005)
+    plt.xlabel(r'$x$')
+    plt.ylabel(r'$\dot{x}$')
+    plt.xlim([-.5, 1.5])
+    plt.ylim([-1.5, 3])
     plt.show()
 
-    # plotting the input
-    plt.figure()
-    plt.plot(t, inputs.f_x)
-    plt.xlabel('Time (s)')
-    plt.ylabel('Force (N)')
-    plt.grid()
+    plt.figure(figsize=(8, 6))
+    plt.plot(states_soln.theta, states_soln.theta_dot, 'b')
+    plt.plot(states_soln_perturbed.theta, states_soln_perturbed.theta_dot, 'r--')
+    plt.plot(states_soln.theta+d_states.theta, states_soln.theta_dot+d_states.theta_dot, 'y')
+    #plt.quiver(states_soln.theta, states_soln.theta_dot, d_states.theta, d_states.theta_dot, color='r', width=0.005, )
+    plt.xlabel(r'$\theta$')
+    plt.ylabel(r'$\dot{\theta}$')
+    plt.xlim([-np.pi/2, 1.5*np.pi])
+    plt.ylim([-4, 9])
     plt.show()
 
 

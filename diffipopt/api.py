@@ -172,7 +172,7 @@ def _define_KKT_solve(prblm):
 
         dKKT_dp = del_KKT_del_p(problem_cls, params, (x, lam_g, lam_xL, lam_xU))
         dKKT_dx_lambda = del_KKT_del_x_lambda(problem_cls, params, (x, lam_g, lam_xL, lam_xU))
-        dKKT_dx_lambda = dKKT_dx_lambda + np.eye(dKKT_dx_lambda.shape[0]) * 1e-6
+        dKKT_dx_lambda = dKKT_dx_lambda + np.eye(dKKT_dx_lambda.shape[0]) * 1e-10
         dx_lam_dp = -np.linalg.solve(dKKT_dx_lambda, dKKT_dp)
 
         x = x.astype(np.float64).reshape((-1, problem_cls.n_vars))
