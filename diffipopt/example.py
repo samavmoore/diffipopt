@@ -80,7 +80,7 @@ if __name__ == '__main__':
     )
 
     #x, lam = solve(cartpole_params, problem)
-    #vmapped_solve = jax.vmap(Partial(solve, problem_instance=problem), in_axes=(0,))
+    #vmapped_solve = jax.vmap(Partial(solve, prob=problem), in_axes=(0,))
     #params = np.array([cartpole_params, cartpole_params, cartpole_params, cartpole_params])
     #x, lam = vmapped_solve(params)
 
@@ -89,13 +89,19 @@ if __name__ == '__main__':
 
     n_states = 4
     n_inputs = 1
-    del_params = params(m_c=0.5, m_p=0.0, l=0.0, dist=0.1, f_max=0.0, tf=0.0)
-    solve_  = Partial(solve, problem_instance=problem)
+    del_params = params(m_c=0.0, m_p=0.2, l=0.0, dist=-0.2, f_max=0.0, tf=0.0)
+    solve_  = Partial(solve, prob=problem)
     soln, jvp = jax.jvp(solve_, (cartpole_params,), (del_params,))
     x, lam = soln
     dx_dp, dlam_dp = jvp
 
-    perturbed_params = cartpole_params._replace(m_c=cartpole_params.m_c+del_params.m_c, m_p=cartpole_params.m_p+del_params.m_p, l=cartpole_params.l+del_params.l, dist=cartpole_params.dist+del_params.dist, f_max=cartpole_params.f_max+del_params.f_max, tf=cartpole_params.tf+del_params.tf)
+    perturbed_params = cartpole_params._replace(m_c=cartpole_params.m_c+del_params.m_c,
+                                                 m_p=cartpole_params.m_p+del_params.m_p, 
+                                                 l=cartpole_params.l+del_params.l, 
+                                                 dist=cartpole_params.dist+del_params.dist, 
+                                                 f_max=cartpole_params.f_max+del_params.f_max, 
+                                                 tf=cartpole_params.tf+del_params.tf)
+    
     x_perturbed, lam_perturbed = solve(perturbed_params, problem)
 
     tf = x[0, 0]
@@ -121,26 +127,42 @@ if __name__ == '__main__':
 
     # plot x vs xdot and dx_dp dxdot_dp with quiver
     plt.figure(figsize=(8, 6))
-    plt.plot(states_soln.x, states_soln.x_dot, 'b')
-    plt.plot(states_soln_perturbed.x, states_soln_perturbed.x_dot, 'r--')
-    plt.plot(states_soln.x+d_states.x, states_soln.x_dot+d_states.x_dot, 'y')
+    plt.plot(states_soln.x, states_soln.x_dot, 'b', label='Nominal')
+    plt.plot(states_soln_perturbed.x, states_soln_perturbed.x_dot, 'r--', label='Perturbed - True')
+    plt.plot(states_soln.x+d_states.x, states_soln.x_dot+d_states.x_dot, 'y', label='Perturbed - Approx')
     #plt.quiver(states_soln.x, states_soln.x_dot, d_states.x, d_states.x_dot, color='r', width=0.005)
     plt.xlabel(r'$x$')
     plt.ylabel(r'$\dot{x}$')
-    plt.xlim([-.5, 1.5])
+    plt.xlim([-.25, 1.5])
     plt.ylim([-1.5, 3])
+    plt.legend()
+    #plt.savefig('/Users/Sam/Documents/DiffTrajOpt/DiffIPOPT/x_xdot.pdf')
     plt.show()
 
     plt.figure(figsize=(8, 6))
-    plt.plot(states_soln.theta, states_soln.theta_dot, 'b')
-    plt.plot(states_soln_perturbed.theta, states_soln_perturbed.theta_dot, 'r--')
-    plt.plot(states_soln.theta+d_states.theta, states_soln.theta_dot+d_states.theta_dot, 'y')
+    plt.plot(states_soln.theta, states_soln.theta_dot, 'b', label='Nominal')
+    plt.plot(states_soln_perturbed.theta, states_soln_perturbed.theta_dot, 'r--', label='Perturbed - True')
+    plt.plot(states_soln.theta+d_states.theta, states_soln.theta_dot+d_states.theta_dot, 'y', label='Perturbed - Approx')
     #plt.quiver(states_soln.theta, states_soln.theta_dot, d_states.theta, d_states.theta_dot, color='r', width=0.005, )
     plt.xlabel(r'$\theta$')
     plt.ylabel(r'$\dot{\theta}$')
-    plt.xlim([-np.pi/2, 1.5*np.pi])
+    plt.xlim([-np.pi/2, 4])
     plt.ylim([-4, 9])
+    plt.legend()
+    #plt.savefig('/Users/Sam/Documents/DiffTrajOpt/DiffIPOPT/theta_thetadot.pdf')
     plt.show()
+
+    # plot inputs
+    time = np.linspace(0, tf, grid_pts)
+    plt.figure(figsize=(8, 6))
+    plt.plot(time, inputs_soln.f_x, 'b', label='Nominal')
+    plt.plot(time, inputs_soln_perturbed.f_x, 'r--', label='Perturbed - True')
+    plt.plot(time, inputs_soln.f_x+d_inputs.f_x, 'y', label='Perturbed - Approx')
+    plt.xlabel(r'$t$')
+    plt.ylabel(r'$f_x$')
+    plt.legend()
+    plt.show()
+
 
 
     #print(type(out))

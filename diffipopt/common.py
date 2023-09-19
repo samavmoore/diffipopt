@@ -10,7 +10,11 @@ bound_box_func = namedtuple(
 
 
 def initial_guess_traj_opt(problem_instance, parameters_instance):
-    '''Generate an initial guess for the optimization problem instance'''
+    '''
+    
+    
+    
+    '''
     
     if hasattr(problem_instance, 'integration_type'):
         n_states = len(problem_instance.state_tup._fields)
