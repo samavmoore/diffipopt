@@ -105,14 +105,6 @@ class Trapezoidal_Meta_Data():
 
             xL <= x <= xU -> xL -x <= 0 and  x - xU <= 0 while filtering out the constraints with infinite bounds or None bounds
             """
-            # bound_box_func is a named tuple with the following fields:
-            # name: name of the bounding box constraint
-            # start: start index of the constraint
-            # end: end index of the constraint
-            # bound_func1: function to evaluate the bound (this is typically all thats needed for initial and final states and inputs)
-            # bound_func2: this is used for path constraints states and inputs need to be bounded along the trajectory
-            # filter_func: (_filter_lb or _filter_ub) this is used to filter out the constraints with infinite bounds or None bounds
-            # Lower bound constraints
             final_time_lb = bound_box_func("final_time_lb", 0, 1, self.problem.final_time.lb, None, _filter_lbs)
             initial_state_lb = bound_box_func("initial_state_lb", 1, self.n_states+1, self.problem.initial_state.lb, None, _filter_lbs)
             initial_input_lb = bound_box_func("initial_input_lb", self.n_states+1, self.n_states+self.n_inputs+1, self.problem.input.lb, None, _filter_lbs)
@@ -169,7 +161,63 @@ class Trapezoidal():
         g(x, p) <= 0 are the constraints
         f(x, p) is the objective function
 
+        Args:
+        Problem: a ControlProblem object
+        Parameters: a tuple of the parameters for the problem
+
+        Attributes:
+        problem: the ControlProblem object
+        params: the parameters for the problem
+        n_states: the number of states in the problem
+        n_inputs: the number of inputs in the problem
+        n_params: the number of parameters in the problem
+        states: a namedtuple of the states in the problem
+        inputs: a namedtuple of the inputs in the problem
+        grid_pts: the number of grid points in the problem
+        n_vars: the number of decision variables in the problem
+        d_tau: the non-dimensional time step
+        xL: the lower bounds on the decision variables
+        xU: the upper bounds on the decision variables
+        A: the A matrix for the dynamics constraints
+        B: the B matrix for the dynamics constraints
+        _objectives: a list of the objective functions
+        _constraints: a list of the constraint functions
+        g_bounds: a list of the constraint bounds
+        bound_boxes: a list of the bounding box functions
+        n_constraints: the number of constraints in the problem
+        gL: the lower bounds on the constraints
+        gU: the upper bounds on the constraints
+        constraints_jac_x: a list of the constraint jacobians (excluding bounding box constraints) with respect to the decision variables
+        constraints_hess_xx_lam: a function that returns the hessian of the constraints (excluding bounding box constraints) multiplied by lambda the lagrange multipliers with respect to the decision variables.
+        constraints_hess_xx: a function that returns the hessian of the constraints (excluding bounding box constraints) with respect to the decision variables.
+        all_constraints: a list of all the constraints (including bounding box constraints)
+        all_constraints_jac_x: a list of the constraint jacobians (including bounding box constraints) with respect to the decision variables
+        all_constraints_jac_p: a list of the constraint jacobians (including bounding box constraints) with respect to the parameters
+        all_constraints_hess_px_lam: a function that returns the hessian of the constraints (including bounding box constraints) multiplied by lambda the lagrange multipliers with respect to the decision variables and the parameters.
+        all_constraints_hess_xx_lam: a function that returns the hessian of the constraints (including bounding box constraints) multiplied by lambda the lagrange multipliers with respect to the decision variables.
+        obj_grad_x: a list of the objective gradients with respect to the decision variables
+        obj_hess_px: a list of the objective hessians with respect to the decision variables and the parameters
+        obj_hess_xx: a list of the objective hessians with respect to the decision variables
+        j_struct: the structure of the jacobian
+        h_struct: the structure of the hessian
+
+        Methods:
+        objective: returns the objective function evaluated at x
+        gradient: returns the gradient of the objective function evaluated at x
+        constraints: returns the constraints (excluding the bounding box constraints) evaluated at x
+        jacobian: returns the jacobian of the constraints (excluding the bounding box constraints) evaluated at x
+        hessian: returns the hessian of the constraints (excluding the bounding box constraints) evaluated at x and lagrange multipliers
+        jacobianstructure: returns the structure of the jacobian
+        hessianstructure: returns the structure of the hessian
+        _jacobianstructure: calculates and returns the structure of the jacobian by probing the constraint functions (excluding the bounding box constraints)
+        _hessianstructure: calculates and returns the structure of the hessian by probing the objective and constraint functions (excluding the bounding box constraints)
+        _setup_functions: sets up the functions for the problem
+        _setup_objective: sets up the objective functions
+        _stack_constraints: stacks the constraints into a list of functions
+        _generate_bound_box_funcs: generates the bounding box functions (used in the derivative calculations)
+        _wrap_n_jit: wraps and jits a function
         '''
+
         self.problem = Problem
         self.params = Problem.param_tup(*Parameters)
         self.n_states = len(Problem.state_tup._fields)
@@ -216,19 +264,66 @@ class Trapezoidal():
         self.h_struct = self._hessianstructure()
 
     def objective(self, x):
+        """
+        This function returns the objective function evaluated at x
+
+        Args:
+            x: the decision variables
+
+        Returns:
+            the objective function evaluated at x
+        """
         return np.sum(np.array([f(x, self.params) for f in self._objectives]))
     
     def gradient(self, x):
+        """
+        This function returns the gradient of the objective function evaluated at x
+        
+        Args:
+            x: the decision variables
+
+        Returns:
+            the gradient of the objective function evaluated at x
+        """
         return np.array([f(x, self.params) for f in self.obj_grad_x])
     
     def constraints(self, x):
+        """
+        This function returns the constraints (excluding the bounding box constraints) evaluated at x
+
+        Args:
+            x: the decision variables
+
+        Returns:
+            the constraints (excluding the bounding box constraints) evaluated at x
+        """
         return np.array([g(x, self.params) for g in self._constraints])
 
     def jacobian(self, x):
+        """
+        This function returns the jacobian of the constraints (excluding the bounding box constraints) evaluated at x
+
+        Args:
+            x: the decision variables
+
+        Returns:
+            the jacobian of the constraints (excluding the bounding box constraints) evaluated at x in the form of a sparse matrix
+        """
         jac = np.array([g(x, self.params) for g in self.constraints_jac_x]).squeeze(0)
         return jac[self.j_struct.row, self.j_struct.col]
     
     def hessian(self, x, lagrange, obj_factor):
+        """
+        This function returns the hessian of the constraints (excluding the bounding box constraints) evaluated at x and lagrange multipliers
+
+        Args:
+            x: the decision variables
+            lagrange: the lagrange multipliers
+            obj_factor: the objective scaling factor
+
+        Returns:
+            the hessian of the constraints (excluding the bounding box constraints) evaluated at x and lagrange multipliers in the form of a sparse matrix
+        """
         H_obj = np.array([f(x, self.params) for f in self.obj_hess_xx])
         H_constraints = self.constraints_hess_xx_lam(x, self.params, lagrange)
         Hess = np.array(obj_factor * H_obj + H_constraints)
@@ -346,14 +441,7 @@ class Trapezoidal():
 
         xL <= x <= xU -> xL -x <= 0 and  x - xU <= 0 while filtering out the constraints with infinite bounds or None bounds
         """
-        # bound_box_func is a named tuple with the following fields:
-        # name: name of the bounding box constraint
-        # start: start index of the constraint
-        # end: end index of the constraint
-        # bound_func1: function to evaluate the bound (this is typically all thats needed for initial and final states and inputs)
-        # bound_func2: this is used for path constraints states and inputs need to be bounded along the trajectory
-        # filter_func: (_filter_lb or _filter_ub) this is used to filter out the constraints with infinite bounds or None bounds
-        # Lower bound constraints
+
         final_time_lb = bound_box_func("final_time_lb", 0, 1, self.problem.final_time.lb, None, _filter_lbs)
         initial_state_lb = bound_box_func("initial_state_lb", 1, self.n_states+1, self.problem.initial_state.lb, None, _filter_lbs)
         initial_input_lb = bound_box_func("initial_input_lb", self.n_states+1, self.n_states+self.n_inputs+1, self.problem.input.lb, None, _filter_lbs)

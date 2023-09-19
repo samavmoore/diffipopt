@@ -7,31 +7,47 @@ jax.config.update("jax_enable_x64", True)
 bound_box_func = namedtuple(
             "bound_box_func", ["name", "start", "end", "bound_func1", "bound_func2", "filter_func"]
         )
+"""
+This namedtuple is used to store information about the bound box constraints. It contains the following fields:
 
+name (str): The name of the bounding box constraint.
+start (int): The start index of the constraint.
+end (int): The end index of the constraint.
+bound_func1 (callable): The function to evaluate the bound. This is typically all thats needed for initial and final states and inputs.
+bound_func2 (callable): This is used for path constraints states and inputs need to be bounded along the trajectory.
+filter_func (callable): This is used to filter out the constraints with infinite bounds or None bounds.
+"""
 
-def initial_guess_traj_opt(problem_instance, parameters_instance):
-    '''
+def initial_guess_traj_opt(prob, params):
+    """
+    This function creates an initial guess for the decision variables for trajectory optimization problems.
+    The initial guess is created by interpolating between the initial and final states and inputs, and
+    guessing a final time from the problem bounds.
+
+    Args:
+        prob (ControlProblem): The problem to be solved.
+        params (tuple): The parameters for the problem.
+
+    Returns:
+        np.ndarray: The initial guess for the decision variables.
+    """
     
-    
-    
-    '''
-    
-    if hasattr(problem_instance, 'integration_type'):
-        n_states = len(problem_instance.state_tup._fields)
-        n_inputs = len(problem_instance.input_tup._fields)
-        n_grid_pts = problem_instance.grid_pts
-        parameters_instance = problem_instance.param_tup(*parameters_instance)
+    if hasattr(prob, 'integration_type'):
+        n_states = len(prob.state_tup._fields)
+        n_inputs = len(prob.input_tup._fields)
+        n_grid_pts = prob.grid_pts
+        params = prob.param_tup(*params)
 
         # Determine the number of decision variables based on the integration type
-        if problem_instance.integration_type == 'trapezoidal':
+        if prob.integration_type == 'trapezoidal':
             n_vars = (n_states + n_inputs) * n_grid_pts + 1  # +1 for final time
-        elif problem_instance.integration_type == 'hermite-simpson':
+        elif prob.integration_type == 'hermite-simpson':
             n_vars = (n_states + n_inputs) * (2 * n_grid_pts - 1) + 1
 
         # Interpolate between the initial and final states with np.interp
-        if problem_instance.initial_state is not None:
-            initial_state = np.nan_to_num(np.asarray(problem_instance.initial_state.lb(parameters_instance)), nan=0).squeeze()
-            final_state = np.nan_to_num(np.asarray(problem_instance.final_state.lb(parameters_instance)), nan=0).squeeze()
+        if prob.initial_state is not None:
+            initial_state = np.nan_to_num(np.asarray(prob.initial_state.lb(params)), nan=0).squeeze()
+            final_state = np.nan_to_num(np.asarray(prob.final_state.lb(params)), nan=0).squeeze()
 
             def interp(s0, sf, tau):
                 return s0 + (sf - s0) * tau
@@ -39,14 +55,14 @@ def initial_guess_traj_opt(problem_instance, parameters_instance):
             state_vars = jax.vmap(Partial(interp, initial_state, final_state))(np.linspace(0, 1, n_grid_pts))
 
         # Guess a constant input
-        if problem_instance.input is not None:
-            lb = np.asarray(problem_instance.input.lb(parameters_instance))
-            ub = np.asarray(problem_instance.input.ub(parameters_instance))
+        if prob.input is not None:
+            lb = np.asarray(prob.input.lb(params))
+            ub = np.asarray(prob.input.ub(params))
             average_input = (lb + ub) / 2.0
             input_vars = np.tile(average_input, (n_grid_pts, 1))
 
         # Initialize the final time tf
-        tf_init = np.asarray(problem_instance.final_time.lb(parameters_instance))
+        tf_init = np.asarray(prob.final_time.lb(params))
 
         # Create the decision variable vector by interleaving states and inputs, and adding tf at the start
         vars = np.insert(np.hstack((state_vars, input_vars)).ravel(), 0, tf_init)
@@ -56,6 +72,17 @@ def initial_guess_traj_opt(problem_instance, parameters_instance):
         return vars
         
 def _filter_lb(g_value, lb_val):
+    """
+    This function filters the lower bound value for a constraint. If the lower bound is infinite, then the constraint is not active and the value is set to NaN. 
+    Otherwise, the value is set to the difference between the constraint value and the lower bound.
+
+    Args:
+        g_value (float): The value of the constraint.
+        lb_val (float): The lower bound value.
+
+    Returns:
+        float: The filtered lower bound value.
+    """
 
     def lb_finite(_):
         return np.array([lb_val - g_value])
@@ -66,6 +93,17 @@ def _filter_lb(g_value, lb_val):
     return jax.lax.cond(np.isinf(lb_val), lb_infinite, lb_finite, None)
 
 def _filter_ub(g_value, ub_val):
+        """
+        This function filters the upper bound value for a constraint. If the upper bound is infinite, then the constraint is not active and the value is set to NaN.
+        Otherwise, the value is set to the difference between the upper bound and the constraint value.
+
+        Args:
+            g_value (float): The value of the constraint.
+            ub_val (float): The upper bound value.
+
+        Returns:
+            float: The filtered upper bound value.
+        """
     
         def ub_finite(_):
             return np.array([g_value - ub_val])
@@ -80,6 +118,16 @@ _vmapped_filter_lb = jax.vmap(_filter_lb, in_axes=(0, 0))
 _vmapped_filter_ub = jax.vmap(_filter_ub, in_axes=(0, 0))
 
 def _filter_lbs(g_values, lb):
+    """
+    This function filters the lower bound values for a set of constraints. If the lower bound is infinite, then the constraint is set to a trivally satisfied value of -1.
+
+    Args:
+        g_values (np.ndarray): The values of the constraints.
+        lb (np.ndarray): The lower bound values.
+
+    Returns:
+        np.ndarray: The filtered lower bound values.
+    """
     lb, g_values = np.atleast_1d(lb), np.atleast_1d(g_values)
     results = _vmapped_filter_lb(g_values, lb)
     results = results.flatten()
@@ -87,6 +135,16 @@ def _filter_lbs(g_values, lb):
     return np.where(mask, results, -1.)  # Substitute NaNs with -1 or another placeholder value
 
 def _filter_ubs(g_values, ub):
+    """
+    This function filters the upper bound values for a set of constraints. If the upper bound is infinite, then the constraint is set to a trivally satisfied value of -1.
+
+    Args:
+        g_values (np.ndarray): The values of the constraints.
+        ub (np.ndarray): The upper bound values.
+
+    Returns:
+        np.ndarray: The filtered upper bound values.
+    """
     ub, g_values = np.atleast_1d(ub), np.atleast_1d(g_values)
     results = _vmapped_filter_ub(g_values, ub)
     results = results.flatten()
@@ -99,6 +157,14 @@ def _get_B(n_states, grid_pts, d_tau):
     This function returns the matrix B which is used to transcribe the dynamics constraints. B is defined as follows (from Betts 4.6.4): 
     B = -1/2*delta_tau[[I, I, 0, 0, ...][0, 0, I, I, 0, 0, ...]...[0, 0, ..., I, I]]
     where delta_tau is the non-dimensional time step and I is the identity matrix of size n_states
+
+    Args:
+        n_states (int): The number of states in the problem.
+        grid_pts (int): The number of grid points in the problem.
+        d_tau (float): The non-dimensional time step.
+
+    Returns:
+        np.ndarray: The matrix B.
     '''
     I = np.eye(n_states)
     
@@ -115,6 +181,15 @@ def _get_A(n_states, n_inputs, grid_pts):
     '''
     This function returns the matrix A which is used to transcribe the dynamics constraints. A is defined as follows (from Betts 4.6.4):
     A = [[0_col, -I, 0, I, ...][0, 0, 0, -I, 0, I, ...]...[0, 0, ..., I, 0]]
+
+    Args:
+        n_states (int): The number of states in the problem.
+        n_inputs (int): The number of inputs in the problem.
+        grid_pts (int): The number of grid points in the problem.
+
+    Returns:
+        np.ndarray: The matrix A.
+
     '''
     I = np.eye(n_states)
     zero_column = np.zeros((n_states, 1))

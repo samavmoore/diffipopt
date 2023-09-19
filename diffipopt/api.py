@@ -648,6 +648,13 @@ def _check_problem(prob):
 def _initialize_problem(prob):
     '''
     This function is used to initialize the problem instance aka perform error checking.
+
+    Args:
+        prob (Union[ControlProblem, Problem]):
+            Instance of the ControlProblem or Problem namedtuple representing the optimization problem.
+        
+    Raises:
+        TypeError: If prob is not of type ControlProblem or Problem.
     '''
 
     # Check if the instance is either a ControlProblem or a Problem
